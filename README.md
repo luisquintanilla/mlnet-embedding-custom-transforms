@@ -1,5 +1,7 @@
 # MLNet.Embeddings.Onnx
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/luisquintanilla/mlnet-embedding-custom-transforms?quickstart=1)
+
 A custom ML.NET `IEstimator` / `ITransformer` that generates text embeddings using local HuggingFace ONNX models. One call encapsulates the entire pipeline — tokenization, ONNX inference, pooling, and normalization — just like `FeaturizeText` does for classical text features.
 
 ```

@@ -1,0 +1,12 @@
+{
+    "name": "MLNet.Embeddings.Onnx",
+    "image": "mcr.microsoft.com/devcontainers/dotnet:10.0",
+    "postCreateCommand": "bash .devcontainer/post-create.sh",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-dotnettools.csdevkit"
+            ]
+        }
+    }
+}
