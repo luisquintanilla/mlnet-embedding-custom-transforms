@@ -61,7 +61,7 @@ private static float[] WeightedMeanPool(
 
 ## Supporting New Tokenizer Formats
 
-**File to modify:** `OnnxTextEmbeddingEstimator.cs` — `LoadTokenizer()` method
+**File to modify:** `TextTokenizerEstimator.cs` — `LoadTokenizer()` method
 
 Currently only `vocab.txt` (BertTokenizer/WordPiece) is supported. To add BPE support:
 
@@ -144,64 +144,92 @@ This creates `model.onnx` along with `vocab.txt` (or `tokenizer.json` depending 
 
 ## Path to Lazy Cursor-Based Evaluation
 
-The current implementation is eager — `Transform()` materializes all rows before returning. A lazy implementation would compute embeddings on-demand as a cursor advances:
+The modular transforms now implement **lazy cursor-based evaluation** via custom `IDataView`/cursor wrappers. Each transform's `Transform()` returns a wrapping `IDataView` — no data is materialized until a cursor iterates.
 
-### What It Would Look Like
+The scorer cursor uses **lookahead batching**: it reads `BatchSize` rows from the upstream tokenizer cursor, packs them into a single ONNX batch, runs inference once, then serves cached results one at a time. This gives batch throughput with lazy memory semantics.
 
-```csharp
-public IDataView Transform(IDataView input)
-{
-    // Return a wrapping IDataView, don't materialize anything
-    return new EmbeddingDataView(input, this);
-}
-```
+## Using the Composable Pipeline
 
-Where `EmbeddingDataView` implements:
+Instead of the convenience facade, you can compose transforms directly for full control over each step:
 
 ```csharp
-class EmbeddingDataView : IDataView
-{
-    public DataViewSchema Schema { get; }  // input schema + embedding column
-    public bool CanShuffle => false;
-    public long? GetRowCount() => _input.GetRowCount();
+var mlContext = new MLContext();
 
-    public DataViewRowCursor GetRowCursor(IEnumerable<DataViewSchema.Column> columns, Random? rand = null)
-    {
-        return new EmbeddingCursor(_input, _transformer, columns);
-    }
-}
+// Step 1: Tokenize
+var tokenizer = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
+{
+    TokenizerPath = "vocab.txt",
+    InputColumnName = "Text",
+    MaxTokenLength = 128
+}).Fit(dataView);
+
+var tokenized = tokenizer.Transform(dataView);
+
+// Step 2: Score with ONNX (task-agnostic)
+var scorer = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+{
+    ModelPath = "model.onnx",
+    MaxTokenLength = 128,
+    BatchSize = 32
+}).Fit(tokenized);
+
+var scored = scorer.Transform(tokenized);
+
+// Step 3: Pool into embeddings
+var pooler = mlContext.Transforms.PoolEmbedding(new EmbeddingPoolingOptions
+{
+    Pooling = PoolingStrategy.MeanPooling,
+    Normalize = true,
+    HiddenDim = scorer.HiddenDim,
+    IsPrePooled = scorer.HasPooledOutput,
+    SequenceLength = scorer.HasPooledOutput ? 1 : 128
+}).Fit(scored);
+
+var pooled = pooler.Transform(scored);
 ```
 
-And `EmbeddingCursor` computes embeddings when the getter is invoked:
+### Why Compose Directly?
+
+- **Swap pooling** without re-running inference (just change the pooler)
+- **Inspect intermediates** (token IDs, attention masks, raw model output)
+- **Reuse** the tokenizer + scorer for non-embedding tasks (classification, NER, etc.)
+
+## Adding New Post-Processing Transforms
+
+The composable architecture makes it easy to add new task-specific transforms that consume the scorer's raw output:
 
 ```csharp
-class EmbeddingCursor : DataViewRowCursor
-{
-    private readonly DataViewRowCursor _inputCursor;
-    private float[]? _currentEmbedding;
+// Future: text classification
+var pipeline = mlContext.Transforms.TokenizeText(tokOpts)
+    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.SoftmaxClassify(classOpts));  // new transform
 
-    // Getter registered for the embedding column
-    private void GetEmbedding(ref VBuffer<float> value)
-    {
-        if (_currentEmbedding == null)
-        {
-            // Compute embedding for current row
-            var text = GetCurrentText();
-            _currentEmbedding = _transformer.GenerateEmbeddings([text])[0];
-        }
-        value = new VBuffer<float>(_currentEmbedding.Length, _currentEmbedding);
-    }
-}
+// Future: named entity recognition
+var pipeline = mlContext.Transforms.TokenizeText(tokOpts)
+    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.DecodeNerEntities(nerOpts));  // new transform
 ```
 
-### Challenges
+Each post-processing transform follows the same pattern:
+1. Read the raw output column from the scorer
+2. Apply task-specific logic (softmax, argmax, span extraction, etc.)
+3. Output the result as a new column
 
-1. **Per-row inference is slow.** ONNX models are optimized for batches. A single-row batch is 5-10x slower per item than a batch of 32.
-2. **Lookahead batching** is complex — the cursor would need to read ahead N rows, batch-infer them, then serve results as the cursor advances.
-3. **Thread safety** — ML.NET cursors can be created concurrently. Each would need its own `InferenceSession` or a session pool.
-4. **Schema construction** — `DataViewSchema.Builder` and cursor registration require careful implementation to satisfy ML.NET's contracts.
+## Using the Provider-Agnostic EmbeddingGeneratorEstimator
 
-**Recommendation:** The eager batched approach is sufficient for most embedding workloads. Lazy evaluation is worthwhile only for very large datasets that don't fit in memory.
+The `EmbeddingGeneratorEstimator` wraps any `IEmbeddingGenerator<string, Embedding<float>>` as an ML.NET pipeline step:
+
+```csharp
+// Works with any MEAI provider — only the generator construction changes
+IEmbeddingGenerator<string, Embedding<float>> generator =
+    new OnnxEmbeddingGenerator(mlContext, transformer);
+    // OR: new OpenAIClient(...).AsEmbeddingGenerator()
+    // OR: new OllamaEmbeddingGenerator(...)
+
+var estimator = mlContext.Transforms.TextEmbedding(generator);
+var transformer = estimator.Fit(dataView);
+var result = transformer.Transform(dataView);
+```
 
 ## Path to Approach D: Inside ML.NET
 

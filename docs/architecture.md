@@ -5,258 +5,175 @@ This document walks through every component in the solution and traces the data 
 ## Component Map
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         User Code                                       │
-│                                                                         │
-│   var estimator = new OnnxTextEmbeddingEstimator(mlContext, options);   │
-│   var transformer = estimator.Fit(data);                                │
-│   var result = transformer.Transform(data);                             │
-│                                                                         │
-│   // OR via MEAI:                                                       │
-│   IEmbeddingGenerator<string, Embedding<float>> gen =                  │
-│       new OnnxEmbeddingGenerator(mlContext, transformer);              │
-│   var embeddings = await gen.GenerateAsync(texts);                     │
-└────────────────────┬───────────────────────┬────────────────────────────┘
-                     │                       │
-        ┌────────────▼──────────┐  ┌─────────▼──────────────┐
-        │ OnnxTextEmbedding-    │  │ OnnxEmbeddingGenerator  │
-        │ Estimator             │  │                         │
-        │                       │  │ IEmbeddingGenerator     │
-        │ IEstimator<T>         │  │ <string, Embedding<T>>  │
-        │ • Fit() → Transformer │  │ • GenerateAsync()       │
-        │ • GetOutputSchema()   │  │ • wraps Transformer     │
-        │ • DiscoverMetadata()  │  └─────────┬───────────────┘
-        │ • LoadTokenizer()     │            │
-        └────────────┬─────────┘            │
-                     │ creates              │ delegates to
-                     ▼                      ▼
-        ┌──────────────────────────────────────────────┐
-        │ OnnxTextEmbeddingTransformer                 │
-        │                                              │
-        │ ITransformer, IDisposable                    │
-        │ • Transform(IDataView) → IDataView           │
-        │ • GenerateEmbeddings(texts) → float[][]      │
-        │ • Save(path) / Load(ctx, path)               │
-        │                                              │
-        │ Holds:                                       │
-        │  ├─ InferenceSession (ONNX model)            │
-        │  ├─ Tokenizer (BertTokenizer)                │
-        │  ├─ Discovered tensor names & dimensions     │
-        │  └─ OnnxTextEmbeddingOptions                 │
-        └──────────┬──────────────┬────────────────────┘
-                   │              │
-          uses     │              │ uses
-                   ▼              ▼
-        ┌────────────────┐  ┌──────────────┐
-        │ EmbeddingPooling│  │ ModelPackager │
-        │                │  │              │
-        │ • Pool()       │  │ • Save()     │
-        │ • ExtractPooled│  │ • Load()     │
-        │ • MeanPool     │  │              │
-        │ • ClsPool      │  │ ZIP:         │
-        │ • MaxPool      │  │ model.onnx   │
-        │ • L2Normalize  │  │ vocab.txt    │
-        │                │  │ config.json  │
-        │ TensorPrimitives│  │ manifest.json│
-        └────────────────┘  └──────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              User Code                                        │
+│                                                                              │
+│  // Composable pipeline (new):                                               │
+│  var pipeline = mlContext.Transforms.TokenizeText(tokenizerOpts)             │
+│      .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))            │
+│      .Append(mlContext.Transforms.PoolEmbedding(poolingOpts));               │
+│                                                                              │
+│  // Convenience API (unchanged):                                             │
+│  var estimator = mlContext.Transforms.OnnxTextEmbedding(options);            │
+│                                                                              │
+│  // MEAI usage (unchanged):                                                  │
+│  IEmbeddingGenerator<string, Embedding<float>> gen = ...;                   │
+│  var embeddings = await gen.GenerateAsync(texts);                            │
+│                                                                              │
+│  // Provider-agnostic ML.NET transform (new):                                │
+│  var estimator = mlContext.Transforms.TextEmbedding(generator);             │
+└──────────────┬────────────────────────────────┬──────────────────────────────┘
+               │                                │
+   ┌───────────▼──────────────┐     ┌───────────▼─────────────────────┐
+   │ OnnxTextEmbedding-       │     │ EmbeddingGenerator-             │
+   │ Estimator (facade)       │     │ Estimator (new)                 │
+   │                          │     │                                 │
+   │ Chains 3 transforms      │     │ Wraps IEmbeddingGenerator       │
+   │ internally               │     │ Provider-agnostic               │
+   │                          │     │ Text col → Embedding col        │
+   │ Returns composite        │     │                                 │
+   │ OnnxTextEmbedding-       │     │ Works with:                     │
+   │ Transformer              │     │ • OnnxEmbeddingGenerator        │
+   └───────────┬──────────────┘     │ • OpenAI / Azure / any MEAI     │
+               │                    └─────────────────────────────────┘
+               │ chains
+               ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│             Reusable Foundation (any transformer ONNX model)                  │
+│                                                                              │
+│  ┌────────────────────┐     ┌──────────────────────────────┐                 │
+│  │ TextTokenizer-     │     │ OnnxTextModelScorer-         │                 │
+│  │ Transformer        │     │ Transformer                  │                 │
+│  │                    │     │                              │                 │
+│  │ Text →             │     │ TokenIds + AttentionMask +   │                 │
+│  │   TokenIds         │────▶│ TokenTypeIds →               │                 │
+│  │   AttentionMask    │     │   RawOutput                  │                 │
+│  │   TokenTypeIds     │     │                              │                 │
+│  │                    │     │ Wraps InferenceSession        │                 │
+│  │ Wraps              │     │ Auto-discovers tensor names   │                 │
+│  │ BertTokenizer      │     │ Handles batching              │                 │
+│  │ (extensible)       │     │ Task-agnostic                 │                 │
+│  └────────────────────┘     └──────────────┬───────────────┘                 │
+│                                            │                                 │
+└────────────────────────────────────────────┼─────────────────────────────────┘
+                                             │
+                  ┌──────────────────────────┬┼──────────────────────┐
+                  │                          ││                      │
+                  ▼                          ▼│                      ▼
+  ┌───────────────────────┐  ┌───────────────▼──────┐  ┌────────────────────┐
+  │ EmbeddingPooling-     │  │ Softmax-             │  │ NerDecoding-       │
+  │ Transformer           │  │ Transformer          │  │ Transformer        │
+  │                       │  │ (future)             │  │ (future)           │
+  │ RawOutput +           │  │                      │  │                    │
+  │ AttentionMask →       │  │ logits →             │  │ per-token logits → │
+  │   Embedding           │  │ class probabilities  │  │ entity spans       │
+  │                       │  │                      │  │                    │
+  │ • Mean/CLS/Max pool   │  │                      │  │                    │
+  │ • L2 normalize        │  │                      │  │                    │
+  └───────────────────────┘  └──────────────────────┘  └────────────────────┘
 ```
 
-## The 6-Stage Pipeline
+## IDataView Column Flow
 
-When `transformer.Transform(dataView)` is called, data flows through 6 stages:
+```
+Input IDataView:
+  │ Text (string, TextDataViewType)
+  ▼
+TextTokenizerTransformer:
+  │ Text (string)                       ← passed through
+  │ TokenIds (VBuffer<long>)            ← NEW: padded to MaxTokenLength
+  │ AttentionMask (VBuffer<long>)       ← NEW: 1=real token, 0=padding
+  │ TokenTypeIds (VBuffer<long>)        ← NEW: zeros (segment IDs)
+  ▼
+OnnxTextModelScorerTransformer:
+  │ Text (string)                       ← passed through
+  │ TokenIds (VBuffer<long>)            ← passed through
+  │ AttentionMask (VBuffer<long>)       ← passed through
+  │ TokenTypeIds (VBuffer<long>)        ← passed through
+  │ RawOutput (VBuffer<float>)          ← NEW: shape depends on model
+  ▼
+EmbeddingPoolingTransformer:
+  │ Text (string)                       ← passed through
+  │ Embedding (VBuffer<float>)          ← NEW: [hiddenDim], pooled + normalized
+  ▼
+Output IDataView
+```
 
-### Stage 1: Text Extraction from IDataView
+## Lazy Evaluation via Custom IDataView / Cursor
 
-The transformer reads the input text column from the `IDataView` using a cursor:
+Each transform returns a **wrapping IDataView** from `Transform()` — no data is materialized. Computation happens lazily when a downstream consumer iterates via a cursor.
 
 ```csharp
-// OnnxTextEmbeddingTransformer.cs — ReadTextColumn()
-var col = dataView.Schema[_options.InputColumnName];
-using var cursor = dataView.GetRowCursor(new[] { col });
-var getter = cursor.GetGetter<ReadOnlyMemory<char>>(col);
-
-while (cursor.MoveNext())
+// Transform() does NO work — just wraps
+public IDataView Transform(IDataView input)
 {
-    getter(ref value);
-    texts.Add(value.ToString());
+    return new TokenizerDataView(input, _tokenizer, _options);
 }
 ```
 
-This materializes all text values into a `List<string>`. This is the "eager" aspect of our Approach C implementation — all rows are read before any inference happens. The texts are then processed in batches of `BatchSize` (default: 32).
-
-### Stage 2: Tokenization
-
-For each batch, the `BertTokenizer` encodes each text into token IDs. We simultaneously build the `attention_mask` (1 for real tokens, 0 for padding):
-
-```csharp
-// OnnxTextEmbeddingTransformer.cs — ProcessBatch()
-var idsTensor = Tensor.Create<long>(idsArray, [batchSize, seqLen]);
-var maskTensor = Tensor.Create<long>(maskArray, [batchSize, seqLen]);
-
-for (int b = 0; b < batchSize; b++)
-{
-    var tokens = _tokenizer.EncodeToIds(texts[b], seqLen, out _, out _);
-    for (int s = 0; s < tokens.Count && s < seqLen; s++)
-    {
-        idsTensor[b, s] = tokens[s];   // Tensor<T> multi-dim indexing
-        maskTensor[b, s] = 1;
-    }
-}
-```
-
-**Key detail:** `Tensor.Create<long>(idsArray, shape)` wraps the existing flat array without copying. The `[b, s]` indexing writes through to the backing array. This means `idsArray` and `maskArray` are ready for OrtValue creation without any data movement. See [tensor-deep-dive.md](tensor-deep-dive.md) for details.
-
-### Stage 3: OrtValue Creation (Zero-Copy Bridge)
-
-The flat backing arrays are passed directly to OnnxRuntime:
-
-```csharp
-var inputs = new Dictionary<string, OrtValue>
-{
-    [_inputIdsName] = OrtValue.CreateTensorValueFromMemory(idsArray, [batchSize, seqLen]),
-    [_attentionMaskName] = OrtValue.CreateTensorValueFromMemory(maskArray, [batchSize, seqLen])
-};
-```
-
-`OrtValue.CreateTensorValueFromMemory` pins the managed array and creates a native tensor that references it directly — no copy. The tensor names (`_inputIdsName`, `_attentionMaskName`) were auto-discovered from ONNX metadata during `Fit()`.
-
-If the model has a `token_type_ids` input (detected during auto-discovery), a zero-filled array is also provided.
-
-### Stage 4: ONNX Inference
-
-```csharp
-using var results = _session.Run(new RunOptions(), inputs, [_outputTensorName]);
-var output = results[0];
-var outputSpan = output.GetTensorDataAsSpan<float>();
-```
-
-The output is a flat `ReadOnlySpan<float>` with shape `[batchSize, seqLen, hiddenDim]` (for unpooled models) or `[batchSize, hiddenDim]` (for pre-pooled models). We read it directly from native memory — another zero-copy operation.
-
-### Stage 5: Pooling and Normalization
-
-This is where `TensorPrimitives` does the heavy lifting. The pooling strategy determines how per-token hidden states are reduced to a single vector:
-
-```csharp
-// EmbeddingPooling.cs — dispatches by strategy
-if (_modelHasPooledOutput)
-    return EmbeddingPooling.ExtractPooled(outputSpan, batchSize, _hiddenDim, _options.Normalize);
-else
-    return EmbeddingPooling.Pool(outputSpan, maskArray, batchSize, seqLen, _hiddenDim,
-        _options.Pooling, _options.Normalize);
-```
-
-For mean pooling specifically, the math is:
+When the final consumer iterates, cursors chain upstream:
 
 ```
-embedding[d] = Σ (hidden_state[s, d] × attention_mask[s]) / Σ attention_mask[s]
-               s                                            s
+PoolerCursor.MoveNext()
+  → ScorerCursor.MoveNext()
+      → TokenizerCursor.MoveNext()
+          → InputCursor.MoveNext()
 ```
 
-Implemented with SIMD-accelerated `TensorPrimitives.Add` and `TensorPrimitives.Divide`. See [tensor-deep-dive.md](tensor-deep-dive.md) for the full walkthrough.
+At any given moment, only **one batch** of intermediate data exists in memory (~6 MB for a batch of 32 with a 384-dim model).
 
-### Stage 6: Output Assembly
+### Lookahead Batching (Scorer Only)
 
-The final embeddings are assembled into an output `IDataView`:
+The tokenizer and pooler are cheap (microseconds per row) — they process row-by-row. The ONNX scorer uses **lookahead batching**: it reads N rows from the upstream tokenizer cursor, packs them into a single ONNX batch, runs inference once, then serves cached results one at a time. This gives batch throughput with lazy memory semantics.
 
-**For ML.NET pipeline usage:**
-```csharp
-// BuildOutputDataView creates rows with Text + Embedding columns
-_mlContext.Data.LoadFromEnumerable(rows);
-```
+### Two Faces: ML.NET + Direct
 
-**For MEAI usage:**
-```csharp
-// OnnxEmbeddingGenerator.cs — wraps float[] into Embedding<float>
-var result = new GeneratedEmbeddings<Embedding<float>>(
-    embeddings.Select(e => new Embedding<float>(e)));
-```
+Each transform exposes two faces:
 
-No data copy — `Embedding<float>` wraps the existing `float[]` array.
+- **ML.NET face** (`Transform(IDataView)`): Lazy, wraps input. Used by ML.NET pipelines.
+- **Direct face** (`Tokenize()`, `Score()`, `Pool()`): Eager, processes batches directly. Used by `GenerateEmbeddings()` and `OnnxEmbeddingGenerator`.
 
 ## Estimator Lifecycle: What Happens in `Fit()`
 
-The estimator is *trivial* — there's nothing to learn from training data. `Fit()` performs validation and initialization:
+The facade estimator (`OnnxTextEmbeddingEstimator`) chains three sub-estimators:
 
 ```
 Fit(IDataView input)
   │
-  ├─ 1. Validate input schema has the text column
-  │     schema.GetColumnOrNull(inputColumnName) != null
+  ├─ 1. Create TextTokenizerEstimator → Fit → TextTokenizerTransformer
+  │     Loads BertTokenizer from vocab.txt
   │
-  ├─ 2. Create InferenceSession from ONNX model file
-  │     new InferenceSession(options.ModelPath)
+  ├─ 2. Create OnnxTextModelScorerEstimator → Fit → OnnxTextModelScorerTransformer
+  │     Creates InferenceSession, auto-discovers tensor metadata
   │
-  ├─ 3. Auto-discover tensor metadata
-  │     DiscoverModelMetadata(session)
-  │     ├─ Probe InputMetadata for input_ids, attention_mask, token_type_ids
-  │     ├─ Probe OutputMetadata for sentence_embedding or last_hidden_state
-  │     ├─ Determine if model has pre-pooled output
-  │     └─ Extract embedding dimension from output tensor shape
+  ├─ 3. Create EmbeddingPoolingEstimator → Fit → EmbeddingPoolingTransformer
+  │     Auto-configured from scorer metadata (HiddenDim, IsPrePooled)
   │
-  ├─ 4. Load tokenizer
-  │     BertTokenizer.Create(stream) from vocab.txt
-  │
-  └─ 5. Return OnnxTextEmbeddingTransformer with all discovered state
+  └─ 4. Return OnnxTextEmbeddingTransformer wrapping all three
 ```
-
-The `GetOutputSchema()` method also probes the ONNX model (it creates a temporary `InferenceSession` to read the embedding dimension), so the schema is accurate even before `Fit()` is called. This allows ML.NET pipeline validation to work correctly.
 
 ## MEAI Bridge: OnnxEmbeddingGenerator
 
-The MEAI wrapper provides a clean `IEmbeddingGenerator<string, Embedding<float>>` interface. Its implementation is thin — it delegates to the transformer's internal `GenerateEmbeddings()` method which bypasses `IDataView` entirely:
+The MEAI wrapper delegates to `GenerateEmbeddings()`, which chains the three sub-transforms' **direct faces**:
 
 ```
-GenerateAsync(IEnumerable<string> values)
+GenerateEmbeddings(texts)
   │
-  ├─ Convert to IReadOnlyList<string>
-  │
-  ├─ Call transformer.GenerateEmbeddings(textList)
-  │   └─ Same ProcessBatch() pipeline as Transform()
-  │      but skips IDataView input/output overhead
-  │
-  └─ Wrap float[][] into GeneratedEmbeddings<Embedding<float>>
+  ├─ _tokenizer.Tokenize(batch) → TokenizedBatch
+  ├─ _scorer.Score(batch) → float[][] (raw ONNX output)
+  └─ _pooler.Pool(scored, attentionMasks) → float[][] (pooled embeddings)
 ```
-
-This allows:
-- Using the same model via ML.NET pipelines (IDataView world)
-- Using it via MEAI for RAG, search, or any `IEmbeddingGenerator` consumer
-- Swapping between providers (OpenAI ↔ local ONNX) via the MEAI interface
-
-The generator also supports ownership semantics: if constructed with `ownsTransformer: true` (or from a model path), it disposes the transformer when the generator is disposed.
 
 ## Save/Load Mechanics
 
-### Saving
-
-`ModelPackager.Save()` creates a zip archive:
+The composite `OnnxTextEmbeddingTransformer` saves/loads as a single zip (same as before):
 
 ```
-transformer.Save("my-model.mlnet")
-  │
-  ├─ Create ZipArchive
-  ├─ Copy model.onnx from ModelPath → archive
-  ├─ Copy vocab.txt from TokenizerPath → archive
-  ├─ Serialize OnnxTextEmbeddingOptions → config.json → archive
-  └─ Write manifest.json (version, embedding dim, timestamp)
+embedding-model.mlnet (zip)
+├── model.onnx
+├── vocab.txt
+├── config.json        ← includes all options
+└── manifest.json
 ```
 
-The tokenizer file is stored with its original filename (e.g., `vocab.txt`), and that filename is recorded in `config.json` so the loader knows what to look for.
-
-### Loading
-
-`ModelPackager.Load()` reconstructs the transformer:
-
-```
-OnnxTextEmbeddingTransformer.Load(mlContext, "my-model.mlnet")
-  │
-  ├─ Extract zip to temp directory
-  ├─ Read config.json → OnnxTextEmbeddingOptions
-  ├─ Set ModelPath = extracted model.onnx
-  ├─ Set TokenizerPath = extracted vocab.txt
-  ├─ Create OnnxTextEmbeddingEstimator with reconstructed options
-  ├─ Create dummy IDataView for schema validation
-  └─ Call estimator.Fit(dummyData) → new transformer
-         └─ This runs full auto-discovery again on the extracted model
-```
-
-The round-trip is bit-perfect — the same ONNX bytes and vocab file produce identical embeddings.
+Individual transforms don't need standalone save/load — they're reconstructed from the facade's saved state. The `EmbeddingGeneratorTransformer` does NOT support save/load (since `IEmbeddingGenerator` has no save contract).

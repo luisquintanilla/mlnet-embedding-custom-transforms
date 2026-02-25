@@ -166,3 +166,35 @@ The all-MiniLM-L6-v2 model (and most BERT-derived sentence-transformers) uses **
 - `BpeTokenizer.Create(Stream vocab, Stream? merges)` — for GPT-2/BPE models
 
 Our `LoadTokenizer()` currently supports `vocab.txt` files (BertTokenizer). Support for BPE tokenizers can be added by detecting the file format — see [extending.md](extending.md).
+
+## Modularization: Why Decompose Into Three Transforms
+
+The original monolithic `OnnxTextEmbeddingTransformer` bundled tokenization, ONNX inference, and pooling into a single class. This was refactored into three composable transforms:
+
+| Transform | Responsibility | Reusability |
+|-----------|---------------|-------------|
+| `TextTokenizerTransformer` | Text → token IDs + attention mask | Any transformer model |
+| `OnnxTextModelScorerTransformer` | Token columns → raw ONNX output | Any transformer ONNX model |
+| `EmbeddingPoolingTransformer` | Raw output → pooled embedding | Embedding generation |
+
+### Why Modularize?
+
+1. **Composability**: ML.NET's design is composable pipelines of single-responsibility transforms. The monolith violated this.
+2. **Reusability**: Tokenization and model scoring are universal — every transformer task (classification, NER, QA, reranking) starts with tokenized text fed through an ONNX model. Only the post-processing differs.
+3. **Inspectability**: Users can inspect intermediate results (what tokens were produced? what does the raw model output look like?).
+4. **Extensibility**: Adding a new task (e.g., text classification) requires only a new post-processing transform, not a new end-to-end pipeline.
+5. **Testability**: Each transform can be unit-tested in isolation.
+
+### Why Keep the Facade?
+
+The `OnnxTextEmbeddingEstimator`/`OnnxTextEmbeddingTransformer` remain as a convenience facade that chains all three transforms internally. This preserves the existing public API (zero breaking changes) while allowing advanced users to compose the transforms directly.
+
+### Lazy vs Eager Evaluation
+
+The modular transforms use **lazy evaluation** via custom `IDataView`/cursor wrappers. `Transform()` returns a wrapping `IDataView` — no data is materialized. Computation happens on-demand when a cursor iterates.
+
+The facade's `GenerateEmbeddings()` (used by MEAI) uses **eager evaluation** via the transforms' direct faces (`Tokenize()` → `Score()` → `Pool()`), bypassing `IDataView` entirely for zero-overhead batch processing.
+
+### Memory Tradeoff
+
+Lazy evaluation eliminates the intermediate materialization concern. Peak memory is bounded by `BatchSize × rowSize` (~6 MB for batch=32 with a 384-dim model), regardless of dataset size. The scorer cursor achieves batch throughput via lookahead batching — reading N rows ahead, running a single `session.Run()`, then serving cached results one at a time.
