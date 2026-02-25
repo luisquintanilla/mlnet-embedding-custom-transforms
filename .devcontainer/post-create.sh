@@ -21,5 +21,11 @@ else
 fi
 
 echo ""
-echo "Ready! Run the sample with:"
+echo "Ready! Run the basic sample with:"
 echo "  cd samples/BasicUsage && dotnet run"
+echo ""
+echo "Additional samples (BGE, E5, GTE) require downloading their models first:"
+echo "  See each sample's README for download instructions:"
+echo "    samples/BgeSmallEmbedding/README.md"
+echo "    samples/E5SmallEmbedding/README.md"
+echo "    samples/GteSmallEmbedding/README.md"

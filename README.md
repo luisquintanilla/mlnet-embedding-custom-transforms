@@ -101,9 +101,11 @@ mlnet-embedding-custom-transforms/
 │   ├── ModelPackager.cs                 — Save/load to self-contained zip
 │   ├── OnnxEmbeddingGenerator.cs        — MEAI IEmbeddingGenerator wrapper
 │   └── MLContextExtensions.cs           — Convenience extension method
-├── samples/BasicUsage/
-│   ├── Program.cs                       — End-to-end demo with all 4 usage patterns
-│   └── models/                          — Downloaded ONNX model + vocab
+├── samples/
+│   ├── BasicUsage/                      — all-MiniLM-L6-v2 end-to-end demo
+│   ├── BgeSmallEmbedding/               — BGE-small with query prefix pattern
+│   ├── E5SmallEmbedding/                — E5-small with query/passage prefixes
+│   └── GteSmallEmbedding/               — GTE-small semantic search (no prefix)
 ├── docs/                                — Detailed documentation
 │   ├── design-decisions.md              — Why every choice was made
 │   ├── architecture.md                  — Component walkthrough + pipeline stages
@@ -126,13 +128,14 @@ mlnet-embedding-custom-transforms/
 
 Any sentence-transformer ONNX model that follows the standard input/output convention:
 
-| Model | Dimensions | Size | Tested |
-|-------|:----------:|:----:|:------:|
-| [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | 384 | ~86 MB | ✅ |
-| [all-MiniLM-L12-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L12-v2) | 384 | ~120 MB | — |
-| [all-mpnet-base-v2](https://huggingface.co/sentence-transformers/all-mpnet-base-v2) | 768 | ~420 MB | — |
-| [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) | 384 | ~80 MB | — |
-| [intfloat/e5-small-v2](https://huggingface.co/intfloat/e5-small-v2) | 384 | ~80 MB | — |
+| Model | Dimensions | Size | Tested | Sample |
+|-------|:----------:|:----:|:------:|--------|
+| [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | 384 | ~86 MB | ✅ | [BasicUsage](samples/BasicUsage/) |
+| [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) | 384 | ~127 MB | ✅ | [BgeSmallEmbedding](samples/BgeSmallEmbedding/) |
+| [intfloat/e5-small-v2](https://huggingface.co/intfloat/e5-small-v2) | 384 | ~127 MB | ✅ | [E5SmallEmbedding](samples/E5SmallEmbedding/) |
+| [thenlper/gte-small](https://huggingface.co/thenlper/gte-small) | 384 | ~127 MB | ✅ | [GteSmallEmbedding](samples/GteSmallEmbedding/) |
+| [all-MiniLM-L12-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L12-v2) | 384 | ~120 MB | — | |
+| [all-mpnet-base-v2](https://huggingface.co/sentence-transformers/all-mpnet-base-v2) | 768 | ~420 MB | — | |
 
 Models with `sentence_embedding` output (pre-pooled) are auto-detected and pooling is skipped.
 
