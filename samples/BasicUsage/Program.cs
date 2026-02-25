@@ -180,6 +180,49 @@ Console.WriteLine($"  Max difference vs convenience API: {maxCompDiff:E2} (shoul
 // Cleanup
 scorerTransformer.Dispose();
 
+// --- 6. Chained Estimator Pipeline ---
+Console.WriteLine($"\n6. Chained Estimator Pipeline (.Append)");
+Console.WriteLine(new string('-', 40));
+
+// The idiomatic ML.NET pattern: chain estimators with .Append(),
+// then Fit + Transform the whole pipeline at once.
+// Note: pooling options require model dimensions upfront (384 for MiniLM).
+var chainedPipeline = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
+    {
+        TokenizerPath = vocabPath,
+        InputColumnName = "Text",
+        MaxTokenLength = 128
+    })
+    .Append(mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+    {
+        ModelPath = modelPath,
+        MaxTokenLength = 128,
+        BatchSize = 8
+    }))
+    .Append(mlContext.Transforms.PoolEmbedding(new EmbeddingPoolingOptions
+    {
+        Pooling = PoolingStrategy.MeanPooling,
+        Normalize = true,
+        HiddenDim = 384,       // known from model architecture
+        SequenceLength = 128,  // matches MaxTokenLength
+        IsPrePooled = false
+    }));
+
+var chainedModel = chainedPipeline.Fit(dataView);
+var chainedResult = chainedModel.Transform(dataView);
+var chainedEmbeddings = mlContext.Data.CreateEnumerable<EmbeddingResult>(chainedResult, reuseRowObject: false).ToList();
+
+float maxChainDiff = 0;
+for (int i = 0; i < embeddings.Count; i++)
+{
+    for (int d = 0; d < embeddings[i].Embedding.Length; d++)
+    {
+        float diff = MathF.Abs(embeddings[i].Embedding[d] - chainedEmbeddings[i].Embedding[d]);
+        maxChainDiff = MathF.Max(maxChainDiff, diff);
+    }
+}
+Console.WriteLine($"  Max difference vs convenience API: {maxChainDiff:E2} (should be ~0)");
+
 Console.WriteLine("\nDone!");
 
 // Cleanup
