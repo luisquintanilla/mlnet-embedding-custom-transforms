@@ -1,0 +1,45 @@
+namespace MLNet.Embeddings.Onnx;
+
+/// <summary>
+/// Configuration for the ONNX text embedding transform.
+/// </summary>
+public class OnnxTextEmbeddingOptions
+{
+    /// <summary>Path to the ONNX model file.</summary>
+    public required string ModelPath { get; set; }
+
+    /// <summary>Path to the HuggingFace tokenizer.json file.</summary>
+    public required string TokenizerPath { get; set; }
+
+    /// <summary>Name of the input text column in the IDataView. Default: "Text".</summary>
+    public string InputColumnName { get; set; } = "Text";
+
+    /// <summary>Name of the output embedding column in the IDataView. Default: "Embedding".</summary>
+    public string OutputColumnName { get; set; } = "Embedding";
+
+    /// <summary>Maximum number of tokens per input text. Texts are padded/truncated to this length. Default: 128.</summary>
+    public int MaxTokenLength { get; set; } = 128;
+
+    /// <summary>Pooling strategy for reducing per-token outputs to a single vector. Default: MeanPooling.</summary>
+    public PoolingStrategy Pooling { get; set; } = PoolingStrategy.MeanPooling;
+
+    /// <summary>Whether to L2-normalize the output embeddings. Default: true.</summary>
+    public bool Normalize { get; set; } = true;
+
+    /// <summary>Batch size for ONNX inference. Default: 32.</summary>
+    public int BatchSize { get; set; } = 32;
+
+    // --- Auto-discovery overrides (null = auto-detect from ONNX metadata) ---
+
+    /// <summary>ONNX input tensor name for token IDs. Null = auto-detect (expects "input_ids").</summary>
+    public string? InputIdsName { get; set; }
+
+    /// <summary>ONNX input tensor name for attention mask. Null = auto-detect (expects "attention_mask").</summary>
+    public string? AttentionMaskName { get; set; }
+
+    /// <summary>ONNX input tensor name for token type IDs. Null = auto-detect (uses "token_type_ids" if present).</summary>
+    public string? TokenTypeIdsName { get; set; }
+
+    /// <summary>ONNX output tensor name for embeddings. Null = auto-detect (prefers "sentence_embedding", falls back to "last_hidden_state").</summary>
+    public string? OutputTensorName { get; set; }
+}
