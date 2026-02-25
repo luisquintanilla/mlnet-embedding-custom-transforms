@@ -61,43 +61,56 @@ private static float[] WeightedMeanPool(
 
 ## Supporting New Tokenizer Formats
 
-**File to modify:** `OnnxTextEmbeddingEstimator.cs` — `LoadTokenizer()` method
+**File to modify:** `TextTokenizerEstimator.cs` — `LoadTokenizer()` method
 
-Currently only `vocab.txt` (BertTokenizer/WordPiece) is supported. To add BPE support:
+`LoadTokenizer()` uses smart resolution to handle directories, HuggingFace config files, and direct vocab files. It currently supports:
+
+| Source | Tokenizer | Vocab Files |
+|--------|-----------|-------------|
+| `tokenizer_class: "BertTokenizer"` | `BertTokenizer` | `vocab.txt` |
+| `tokenizer_class: "XLMRobertaTokenizer"` | `LlamaTokenizer` | `sentencepiece.bpe.model`, `tokenizer.model` |
+| `tokenizer_class: "LlamaTokenizer"` | `LlamaTokenizer` | `tokenizer.model` |
+| `tokenizer_class: "GPT2Tokenizer"` | `BpeTokenizer` | `vocab.json` + `merges.txt` |
+| `tokenizer_class: "RobertaTokenizer"` | `BpeTokenizer` | `vocab.json` + `merges.txt` |
+| Direct `.txt` file | `BertTokenizer` | (the file itself) |
+| Direct `.model` file | `LlamaTokenizer` | (the file itself) |
+
+### Adding a new tokenizer type
+
+To add support for a new `tokenizer_class` value (e.g., a future `MistralTokenizer`):
+
+1. Add a case to the `LoadFromConfig()` switch:
 
 ```csharp
-internal static Tokenizer LoadTokenizer(string path)
+"MistralTokenizer" => LoadSentencePieceFromDirectory(directory),
+```
+
+2. If the new tokenizer uses a completely different format, add a new `LoadXxxFromDirectory()` method:
+
+```csharp
+private static Tokenizer LoadCustomFromDirectory(string directory)
 {
-    var ext = Path.GetExtension(path).ToLowerInvariant();
-    var fileName = Path.GetFileName(path).ToLowerInvariant();
-
-    return (ext, fileName) switch
-    {
-        (".txt", _) => BertTokenizer.Create(File.OpenRead(path)),
-
-        // BPE tokenizer (GPT-2 style) — requires vocab.json + merges.txt
-        (".json", "vocab.json") => LoadBpeTokenizer(path),
-
-        _ => throw new NotSupportedException(
-            $"Unsupported tokenizer file: '{fileName}'. " +
-            $"Use vocab.txt for BERT/WordPiece or vocab.json for BPE.")
-    };
-}
-
-private static Tokenizer LoadBpeTokenizer(string vocabPath)
-{
-    var dir = Path.GetDirectoryName(vocabPath)!;
-    var mergesPath = Path.Combine(dir, "merges.txt");
-
-    using var vocabStream = File.OpenRead(vocabPath);
-    using var mergesStream = File.Exists(mergesPath)
-        ? File.OpenRead(mergesPath) : null;
-
-    return BpeTokenizer.Create(vocabStream, mergesStream);
+    var vocabPath = Path.Combine(directory, "custom_vocab.dat");
+    if (!File.Exists(vocabPath))
+        throw new FileNotFoundException(
+            $"Custom tokenizer requires custom_vocab.dat in '{directory}'.");
+    // Construct and return the tokenizer
 }
 ```
 
-**Also update `ModelPackager`:** When saving, you'd need to bundle both `vocab.json` and `merges.txt` for BPE models.
+3. For tokenizer types not supported by `Microsoft.ML.Tokenizers`, users can always inject a pre-constructed instance via `TextTokenizerOptions.Tokenizer`.
+
+### HuggingFace config resolution
+
+When `TokenizerPath` points to a directory or `tokenizer_config.json`, the loader:
+1. Reads `tokenizer_class` from the JSON (strips `"Fast"` suffix: `BertTokenizerFast` → `BertTokenizer`)
+2. Dispatches to the appropriate factory method
+3. Applies config properties (e.g., `do_lower_case` → `BertOptions.LowerCaseBeforeTokenization`)
+4. Finds sibling vocab files in the same directory
+
+This mirrors HuggingFace's `AutoTokenizer.from_pretrained()` pattern.
+
+**Also update `ModelPackager`:** When saving, ensure all required vocab files are bundled for the tokenizer type being used.
 
 ## Using Different ONNX Models
 
@@ -124,7 +137,8 @@ If tensor names differ from the convention, use the override options:
 var options = new OnnxTextEmbeddingOptions
 {
     ModelPath = "custom-model.onnx",
-    TokenizerPath = "vocab.txt",
+    TokenizerPath = "models/custom-model/",       // directory with tokenizer_config.json
+    // OR: TokenizerPath = "vocab.txt",            // direct file still works
     InputIdsName = "tokens",              // override
     AttentionMaskName = "mask",           // override
     OutputTensorName = "embeddings",      // override
@@ -144,64 +158,92 @@ This creates `model.onnx` along with `vocab.txt` (or `tokenizer.json` depending 
 
 ## Path to Lazy Cursor-Based Evaluation
 
-The current implementation is eager — `Transform()` materializes all rows before returning. A lazy implementation would compute embeddings on-demand as a cursor advances:
+The modular transforms now implement **lazy cursor-based evaluation** via custom `IDataView`/cursor wrappers. Each transform's `Transform()` returns a wrapping `IDataView` — no data is materialized until a cursor iterates.
 
-### What It Would Look Like
+The scorer cursor uses **lookahead batching**: it reads `BatchSize` rows from the upstream tokenizer cursor, packs them into a single ONNX batch, runs inference once, then serves cached results one at a time. This gives batch throughput with lazy memory semantics.
 
-```csharp
-public IDataView Transform(IDataView input)
-{
-    // Return a wrapping IDataView, don't materialize anything
-    return new EmbeddingDataView(input, this);
-}
-```
+## Using the Composable Pipeline
 
-Where `EmbeddingDataView` implements:
+Instead of the convenience facade, you can compose transforms directly for full control over each step:
 
 ```csharp
-class EmbeddingDataView : IDataView
-{
-    public DataViewSchema Schema { get; }  // input schema + embedding column
-    public bool CanShuffle => false;
-    public long? GetRowCount() => _input.GetRowCount();
+var mlContext = new MLContext();
 
-    public DataViewRowCursor GetRowCursor(IEnumerable<DataViewSchema.Column> columns, Random? rand = null)
-    {
-        return new EmbeddingCursor(_input, _transformer, columns);
-    }
-}
+// Step 1: Tokenize
+var tokenizer = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
+{
+    TokenizerPath = "models/all-MiniLM-L6-v2/",  // directory — auto-detects from tokenizer_config.json
+    InputColumnName = "Text",
+    MaxTokenLength = 128
+}).Fit(dataView);
+
+var tokenized = tokenizer.Transform(dataView);
+
+// Step 2: Score with ONNX (task-agnostic)
+var scorer = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+{
+    ModelPath = "model.onnx",
+    MaxTokenLength = 128,
+    BatchSize = 32
+}).Fit(tokenized);
+
+var scored = scorer.Transform(tokenized);
+
+// Step 3: Pool into embeddings
+var pooler = mlContext.Transforms.PoolEmbedding(new EmbeddingPoolingOptions
+{
+    Pooling = PoolingStrategy.MeanPooling,
+    Normalize = true,
+    HiddenDim = scorer.HiddenDim,
+    IsPrePooled = scorer.HasPooledOutput,
+    SequenceLength = scorer.HasPooledOutput ? 1 : 128
+}).Fit(scored);
+
+var pooled = pooler.Transform(scored);
 ```
 
-And `EmbeddingCursor` computes embeddings when the getter is invoked:
+### Why Compose Directly?
+
+- **Swap pooling** without re-running inference (just change the pooler)
+- **Inspect intermediates** (token IDs, attention masks, raw model output)
+- **Reuse** the tokenizer + scorer for non-embedding tasks (classification, NER, etc.)
+
+## Adding New Post-Processing Transforms
+
+The composable architecture makes it easy to add new task-specific transforms that consume the scorer's raw output:
 
 ```csharp
-class EmbeddingCursor : DataViewRowCursor
-{
-    private readonly DataViewRowCursor _inputCursor;
-    private float[]? _currentEmbedding;
+// Future: text classification
+var pipeline = mlContext.Transforms.TokenizeText(tokOpts)
+    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.SoftmaxClassify(classOpts));  // new transform
 
-    // Getter registered for the embedding column
-    private void GetEmbedding(ref VBuffer<float> value)
-    {
-        if (_currentEmbedding == null)
-        {
-            // Compute embedding for current row
-            var text = GetCurrentText();
-            _currentEmbedding = _transformer.GenerateEmbeddings([text])[0];
-        }
-        value = new VBuffer<float>(_currentEmbedding.Length, _currentEmbedding);
-    }
-}
+// Future: named entity recognition
+var pipeline = mlContext.Transforms.TokenizeText(tokOpts)
+    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.DecodeNerEntities(nerOpts));  // new transform
 ```
 
-### Challenges
+Each post-processing transform follows the same pattern:
+1. Read the raw output column from the scorer
+2. Apply task-specific logic (softmax, argmax, span extraction, etc.)
+3. Output the result as a new column
 
-1. **Per-row inference is slow.** ONNX models are optimized for batches. A single-row batch is 5-10x slower per item than a batch of 32.
-2. **Lookahead batching** is complex — the cursor would need to read ahead N rows, batch-infer them, then serve results as the cursor advances.
-3. **Thread safety** — ML.NET cursors can be created concurrently. Each would need its own `InferenceSession` or a session pool.
-4. **Schema construction** — `DataViewSchema.Builder` and cursor registration require careful implementation to satisfy ML.NET's contracts.
+## Using the Provider-Agnostic EmbeddingGeneratorEstimator
 
-**Recommendation:** The eager batched approach is sufficient for most embedding workloads. Lazy evaluation is worthwhile only for very large datasets that don't fit in memory.
+The `EmbeddingGeneratorEstimator` wraps any `IEmbeddingGenerator<string, Embedding<float>>` as an ML.NET pipeline step:
+
+```csharp
+// Works with any MEAI provider — only the generator construction changes
+IEmbeddingGenerator<string, Embedding<float>> generator =
+    new OnnxEmbeddingGenerator(mlContext, transformer);
+    // OR: new OpenAIClient(...).AsEmbeddingGenerator()
+    // OR: new OllamaEmbeddingGenerator(...)
+
+var estimator = mlContext.Transforms.TextEmbedding(generator);
+var transformer = estimator.Fit(dataView);
+var result = transformer.Transform(dataView);
+```
 
 ## Path to Approach D: Inside ML.NET
 

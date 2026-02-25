@@ -1,8 +1,6 @@
 # Architecture
 
-This document walks through every component in the solution and traces the data flow from raw text to final embedding vector. Code references point to the actual source files.
-
-## Component Map
+## Component Diagram
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -51,9 +49,8 @@ This document walks through every component in the solution and traces the data 
 │  │   TokenTypeIds     │     │                              │                 │
 │  │                    │     │ Wraps InferenceSession        │                 │
 │  │ Wraps              │     │ Auto-discovers tensor names   │                 │
-│  │ BertTokenizer,     │     │ Handles batching              │                 │
-│  │ SentencePiece,     │     │ Task-agnostic                 │                 │
-│  │ BPE (auto-detect)  │                                                       │
+│  │ BertTokenizer      │     │ Handles batching              │                 │
+│  │ (extensible)       │     │ Task-agnostic                 │                 │
 │  └────────────────────┘     └──────────────┬───────────────┘                 │
 │                                            │                                 │
 └────────────────────────────────────────────┼─────────────────────────────────┘
@@ -84,14 +81,16 @@ TextTokenizerTransformer:
   │ Text (string)                       ← passed through
   │ TokenIds (VBuffer<long>)            ← NEW: padded to MaxTokenLength
   │ AttentionMask (VBuffer<long>)       ← NEW: 1=real token, 0=padding
-  │ TokenTypeIds (VBuffer<long>)        ← NEW: zeros (segment IDs)
+  │ TokenTypeIds (VBuffer<long>)        ← NEW: zeros (or segment IDs for text pairs)
   ▼
 OnnxTextModelScorerTransformer:
   │ Text (string)                       ← passed through
   │ TokenIds (VBuffer<long>)            ← passed through
   │ AttentionMask (VBuffer<long>)       ← passed through
   │ TokenTypeIds (VBuffer<long>)        ← passed through
-  │ RawOutput (VBuffer<float>)          ← NEW: shape depends on model
+  │ RawOutput (VBuffer<float>)          ← NEW: shape depends on model:
+  │                                         [hiddenDim] if pre-pooled
+  │                                         [seqLen × hiddenDim] if unpooled
   ▼
 EmbeddingPoolingTransformer:
   │ Text (string)                       ← passed through
@@ -121,60 +120,70 @@ PoolerCursor.MoveNext()
           → InputCursor.MoveNext()
 ```
 
-At any given moment, only **one batch** of intermediate data exists in memory (~6 MB for a batch of 32 with a 384-dim model).
+At any given moment, only **one batch** of intermediate data exists in memory (~6 MB for a batch of 32 with a 384-dim model). The 1.9 GB intermediate materialization problem is eliminated.
 
 ### Lookahead Batching (Scorer Only)
 
-The tokenizer and pooler are cheap (microseconds per row) — they process row-by-row. The ONNX scorer uses **lookahead batching**: it reads N rows from the upstream tokenizer cursor, packs them into a single ONNX batch, runs inference once, then serves cached results one at a time. This gives batch throughput with lazy memory semantics.
-
-### Two Faces: ML.NET + Direct
-
-Each transform exposes two faces:
-
-- **ML.NET face** (`Transform(IDataView)`): Lazy, wraps input. Used by ML.NET pipelines.
-- **Direct face** (`Tokenize()`, `Score()`, `Pool()`): Eager, processes batches directly. Used by `GenerateEmbeddings()` and `OnnxEmbeddingGenerator`.
-
-## Estimator Lifecycle: What Happens in `Fit()`
-
-The facade estimator (`OnnxTextEmbeddingEstimator`) chains three sub-estimators:
+The tokenizer and pooler are cheap (microseconds per row) — they process row-by-row. The ONNX scorer is expensive and batch-sensitive (15x faster at batch=32 vs. batch=1). The scorer cursor implements **lookahead batching**:
 
 ```
-Fit(IDataView input)
-  │
-  ├─ 1. Create TextTokenizerEstimator → Fit → TextTokenizerTransformer
-  │     Loads tokenizer via smart resolution (directory/config/vocab file)
-  │
-  ├─ 2. Create OnnxTextModelScorerEstimator → Fit → OnnxTextModelScorerTransformer
-  │     Creates InferenceSession, auto-discovers tensor metadata
-  │
-  ├─ 3. Create EmbeddingPoolingEstimator → Fit → EmbeddingPoolingTransformer
-  │     Auto-configured from scorer metadata (HiddenDim, IsPrePooled)
-  │
-  └─ 4. Return OnnxTextEmbeddingTransformer wrapping all three
+ScorerCursor.MoveNext():
+  if cached batch exhausted:
+    read next 32 rows from upstream tokenizer cursor
+    pack token arrays into flat batch tensors
+    single session.Run() call
+    cache 32 output arrays
+  return cached result[batchIndex++]
 ```
 
-## MEAI Bridge: OnnxEmbeddingGenerator
+This gives us batch throughput with lazy memory semantics.
 
-The MEAI wrapper delegates to `GenerateEmbeddings()`, which chains the three sub-transforms' **direct faces**:
+### Per-Transform Boilerplate
 
+Each lazy transform requires three types:
+
+| Type | Purpose | Lines (est.) |
+|------|---------|-------------|
+| `XxxDataView : IDataView` | Wraps upstream IDataView, adds output column(s) to schema | ~50 |
+| `XxxCursor : DataViewRowCursor` | Chains to upstream cursor, computes values on MoveNext | ~80-150 |
+| Column getter delegates | `ValueGetter<VBuffer<T>>` that return computed values | ~20 |
+
+This boilerplate is **temporary scaffolding** — when migrating to ML.NET (Approach D), it's replaced by `RowToRowTransformerBase` / `MapperBase` which provide cursor and schema infrastructure automatically. See [migration-to-mlnet.md](migration-to-mlnet.md).
+
+## Internal vs. External Composition
+
+Each transform exposes TWO faces:
+
+### ML.NET Face (IDataView-based, Lazy)
+Used by ML.NET pipelines. `Transform()` returns a wrapping IDataView. Computation happens lazily when a cursor iterates. No materialization.
+
+### Direct Face (List/Array-based, Eager)
+Used internally by the facade's `GenerateEmbeddings()` and the MEAI generator. Bypasses IDataView entirely for zero-overhead batch processing.
+
+```csharp
+// ML.NET face (public) — lazy, wraps input
+public IDataView Transform(IDataView input) { ... }
+
+// Direct face (internal) — eager, processes batch directly
+internal TokenizedBatch Tokenize(IReadOnlyList<string> texts) { ... }
+internal float[][] Score(TokenizedBatch batch) { ... }
+internal float[][] Pool(float[][] rawOutput, long[][] attentionMasks) { ... }
 ```
-GenerateEmbeddings(texts)
-  │
-  ├─ _tokenizer.Tokenize(batch) → TokenizedBatch
-  ├─ _scorer.Score(batch) → float[][] (raw ONNX output)
-  └─ _pooler.Pool(scored, attentionMasks) → float[][] (pooled embeddings)
-```
 
-## Save/Load Mechanics
+The direct faces are used by `GenerateEmbeddings()` and `OnnxEmbeddingGenerator` for maximum throughput without IDataView overhead.
 
-The composite `OnnxTextEmbeddingTransformer` saves/loads as a single zip (same as before):
+## Save/Load Strategy
+
+The composite `OnnxTextEmbeddingTransformer` (facade) saves/loads as a single zip (same as today):
 
 ```
 embedding-model.mlnet (zip)
 ├── model.onnx
-├── vocab.txt              ← tokenizer vocabulary (format varies by model)
-├── config.json            ← includes all options
+├── vocab.txt
+├── config.json        ← includes all three transforms' options
 └── manifest.json
 ```
 
-Individual transforms don't need standalone save/load — they're reconstructed from the facade's saved state. The `EmbeddingGeneratorTransformer` does NOT support save/load (since `IEmbeddingGenerator` has no save contract).
+Individual transforms don't need standalone save/load — they're reconstructed from the facade's saved state.
+
+The provider-agnostic `EmbeddingGeneratorTransformer` does NOT support save/load natively (since `IEmbeddingGenerator` has no save contract). ONNX-backed generators can be saved/loaded via `OnnxEmbeddingGenerator.Save()/Load()`.

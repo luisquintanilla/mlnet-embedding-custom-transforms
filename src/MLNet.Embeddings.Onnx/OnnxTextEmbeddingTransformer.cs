@@ -1,93 +1,61 @@
-using System.Numerics.Tensors;
 using Microsoft.ML;
 using Microsoft.ML.Data;
-using Microsoft.ML.OnnxRuntime;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Tokenizers;
 
 namespace MLNet.Embeddings.Onnx;
 
 /// <summary>
 /// ML.NET ITransformer that generates text embeddings using a local ONNX model.
-/// Encapsulates tokenization → ONNX inference → pooling in a single transform.
+/// Internally composes tokenization → ONNX inference → pooling using three sub-transforms.
 /// </summary>
 public sealed class OnnxTextEmbeddingTransformer : ITransformer, IDisposable
 {
     private readonly MLContext _mlContext;
     private readonly OnnxTextEmbeddingOptions _options;
-    private readonly InferenceSession _session;
-    private readonly Tokenizer _tokenizer;
 
-    // Discovered ONNX metadata
-    private readonly string _inputIdsName;
-    private readonly string _attentionMaskName;
-    private readonly string? _tokenTypeIdsName;
-    private readonly string _outputTensorName;
-    private readonly int _hiddenDim;
-    private readonly bool _modelHasPooledOutput;
+    private readonly TextTokenizerTransformer _tokenizer;
+    private readonly OnnxTextModelScorerTransformer _scorer;
+    private readonly EmbeddingPoolingTransformer _pooler;
 
     public bool IsRowToRowMapper => true;
 
     internal OnnxTextEmbeddingOptions Options => _options;
-    public int EmbeddingDimension => _hiddenDim;
+    public int EmbeddingDimension => _scorer.HiddenDim;
+
+    internal TextTokenizerTransformer Tokenizer => _tokenizer;
+    internal OnnxTextModelScorerTransformer Scorer => _scorer;
+    internal EmbeddingPoolingTransformer Pooler => _pooler;
 
     internal OnnxTextEmbeddingTransformer(
         MLContext mlContext,
         OnnxTextEmbeddingOptions options,
-        InferenceSession session,
-        Tokenizer tokenizer,
-        string inputIdsName,
-        string attentionMaskName,
-        string? tokenTypeIdsName,
-        string outputTensorName,
-        int hiddenDim,
-        bool modelHasPooledOutput)
+        TextTokenizerTransformer tokenizer,
+        OnnxTextModelScorerTransformer scorer,
+        EmbeddingPoolingTransformer pooler)
     {
         _mlContext = mlContext;
         _options = options;
-        _session = session;
         _tokenizer = tokenizer;
-        _inputIdsName = inputIdsName;
-        _attentionMaskName = attentionMaskName;
-        _tokenTypeIdsName = tokenTypeIdsName;
-        _outputTensorName = outputTensorName;
-        _hiddenDim = hiddenDim;
-        _modelHasPooledOutput = modelHasPooledOutput;
+        _scorer = scorer;
+        _pooler = pooler;
+    }
+
+    /// <summary>
+    /// ML.NET face: chains the three sub-transforms via IDataView.
+    /// All lazy — no materialization until a cursor iterates.
+    /// </summary>
+    public IDataView Transform(IDataView input)
+    {
+        var tokenized = _tokenizer.Transform(input);
+        var scored = _scorer.Transform(tokenized);
+        var pooled = _pooler.Transform(scored);
+        return pooled;
     }
 
     public DataViewSchema GetOutputSchema(DataViewSchema inputSchema)
     {
-        var builder = new DataViewSchema.Builder();
-        builder.AddColumns(inputSchema);
-
-        // Add embedding column
-        var embeddingType = new VectorDataViewType(NumberDataViewType.Single, _hiddenDim);
-        builder.AddColumn(_options.OutputColumnName, embeddingType);
-
-        return builder.ToSchema();
-    }
-
-    public IDataView Transform(IDataView input)
-    {
-        // 1. Read all text from input column
-        var texts = ReadTextColumn(input);
-        if (texts.Count == 0)
-            return CreateEmptyOutput(input);
-
-        // 2. Process in batches
-        var allEmbeddings = new List<float[]>(texts.Count);
-        int batchSize = _options.BatchSize;
-
-        for (int start = 0; start < texts.Count; start += batchSize)
-        {
-            int count = Math.Min(batchSize, texts.Count - start);
-            var batchTexts = texts.GetRange(start, count);
-            var batchEmbeddings = ProcessBatch(batchTexts);
-            allEmbeddings.AddRange(batchEmbeddings);
-        }
-
-        // 3. Build output IDataView with original columns + embedding column
-        return BuildOutputDataView(input, allEmbeddings);
+        var tokSchema = _tokenizer.GetOutputSchema(inputSchema);
+        var scorerSchema = _scorer.GetOutputSchema(tokSchema);
+        return _pooler.GetOutputSchema(scorerSchema);
     }
 
     public IRowToRowMapper GetRowToRowMapper(DataViewSchema inputSchema)
@@ -105,7 +73,7 @@ public sealed class OnnxTextEmbeddingTransformer : ITransformer, IDisposable
 
     /// <summary>
     /// Generates embeddings for a list of texts directly (bypasses IDataView).
-    /// Useful for the MEAI wrapper.
+    /// Chains the three sub-transforms' direct faces for zero-overhead batch processing.
     /// </summary>
     internal float[][] GenerateEmbeddings(IReadOnlyList<string> texts)
     {
@@ -122,119 +90,15 @@ public sealed class OnnxTextEmbeddingTransformer : ITransformer, IDisposable
             for (int i = start; i < start + count; i++)
                 batchTexts.Add(texts[i]);
 
-            var batchEmbeddings = ProcessBatch(batchTexts);
-            allEmbeddings.AddRange(batchEmbeddings);
+            // Chain direct faces
+            var tokenized = _tokenizer.Tokenize(batchTexts);
+            var scored = _scorer.Score(tokenized);
+            var embeddings = _pooler.Pool(scored, tokenized.AttentionMasks);
+
+            allEmbeddings.AddRange(embeddings);
         }
 
         return [.. allEmbeddings];
-    }
-
-    private float[][] ProcessBatch(List<string> texts)
-    {
-        int batchSize = texts.Count;
-        int seqLen = _options.MaxTokenLength;
-
-        // Tokenize and build input tensors using Tensor<T> for shape-safe indexing
-        var idsArray = new long[batchSize * seqLen];
-        var maskArray = new long[batchSize * seqLen];
-        var typeIdsArray = _tokenTypeIdsName != null ? new long[batchSize * seqLen] : null;
-
-        var idsTensor = Tensor.Create<long>(idsArray, [batchSize, seqLen]);
-        var maskTensor = Tensor.Create<long>(maskArray, [batchSize, seqLen]);
-
-        for (int b = 0; b < batchSize; b++)
-        {
-            var tokens = _tokenizer.EncodeToIds(texts[b], seqLen, out _, out _);
-
-            for (int s = 0; s < tokens.Count && s < seqLen; s++)
-            {
-                idsTensor[b, s] = tokens[s];
-                maskTensor[b, s] = 1;
-            }
-        }
-
-        // Create OrtValues from flat backing arrays (zero-copy)
-        var inputs = new Dictionary<string, OrtValue>
-        {
-            [_inputIdsName] = OrtValue.CreateTensorValueFromMemory(idsArray, [batchSize, seqLen]),
-            [_attentionMaskName] = OrtValue.CreateTensorValueFromMemory(maskArray, [batchSize, seqLen])
-        };
-
-        if (_tokenTypeIdsName != null && typeIdsArray != null)
-            inputs[_tokenTypeIdsName] = OrtValue.CreateTensorValueFromMemory(typeIdsArray, [batchSize, seqLen]);
-
-        try
-        {
-            // Run ONNX inference
-            using var results = _session.Run(new RunOptions(), inputs, [_outputTensorName]);
-            var output = results[0];
-            var outputSpan = output.GetTensorDataAsSpan<float>();
-
-            // Pool and normalize
-            if (_modelHasPooledOutput)
-            {
-                return EmbeddingPooling.ExtractPooled(outputSpan, batchSize, _hiddenDim, _options.Normalize);
-            }
-            else
-            {
-                return EmbeddingPooling.Pool(
-                    outputSpan, maskArray, batchSize, seqLen, _hiddenDim,
-                    _options.Pooling, _options.Normalize);
-            }
-        }
-        finally
-        {
-            foreach (var ortValue in inputs.Values)
-                ortValue.Dispose();
-        }
-    }
-
-    private List<string> ReadTextColumn(IDataView dataView)
-    {
-        var texts = new List<string>();
-        var col = dataView.Schema[_options.InputColumnName];
-        using var cursor = dataView.GetRowCursor(new[] { col });
-        var getter = cursor.GetGetter<ReadOnlyMemory<char>>(col);
-
-        ReadOnlyMemory<char> value = default;
-        while (cursor.MoveNext())
-        {
-            getter(ref value);
-            texts.Add(value.ToString());
-        }
-
-        return texts;
-    }
-
-    private IDataView CreateEmptyOutput(IDataView input)
-    {
-        return BuildOutputDataView(input, []);
-    }
-
-    private IDataView BuildOutputDataView(IDataView input, List<float[]> embeddings)
-    {
-        // Read all input rows + attach embeddings
-        var inputSchema = input.Schema;
-        var rows = new List<EmbeddingRow>();
-
-        var textCol = inputSchema[_options.InputColumnName];
-        using var cursor = input.GetRowCursor(new[] { textCol });
-        var getter = cursor.GetGetter<ReadOnlyMemory<char>>(textCol);
-
-        int idx = 0;
-        ReadOnlyMemory<char> value = default;
-        while (cursor.MoveNext())
-        {
-            getter(ref value);
-            rows.Add(new EmbeddingRow
-            {
-                Text = value.ToString(),
-                Embedding = idx < embeddings.Count ? embeddings[idx] : []
-            });
-            idx++;
-        }
-
-        return _mlContext.Data.LoadFromEnumerable(rows);
     }
 
     /// <summary>
@@ -250,15 +114,6 @@ public sealed class OnnxTextEmbeddingTransformer : ITransformer, IDisposable
 
     public void Dispose()
     {
-        _session.Dispose();
-    }
-
-    // Internal POCO for building output IDataView
-    private sealed class EmbeddingRow
-    {
-        public string Text { get; set; } = "";
-
-        [VectorType]
-        public float[] Embedding { get; set; } = [];
+        _scorer.Dispose();
     }
 }

@@ -157,12 +157,53 @@ void ICanSaveModel.Save(ModelSaveContext ctx)
 
 Users call `transformer.Save("path.mlnet")` instead of `mlContext.Model.Save(transformer, schema, "path")`. This is a minor API difference that would disappear if the transform moved into ML.NET.
 
-## Why BertTokenizer (Not BPE)
+## Tokenizer Loading: Smart Resolution via `TokenizerPath`
 
-The all-MiniLM-L6-v2 model (and most BERT-derived sentence-transformers) uses **WordPiece** tokenization, not BPE. The tokenizer vocabulary is distributed as `vocab.txt` — a simple newline-delimited file of tokens.
+The all-MiniLM-L6-v2 model (and most BERT-derived sentence-transformers) uses **WordPiece** tokenization, distributed as `vocab.txt`. Other models use SentencePiece (`.model`) or BPE (`vocab.json` + `merges.txt`).
 
 `Microsoft.ML.Tokenizers` v2.0.0 provides:
-- `BertTokenizer.Create(Stream vocabStream)` — for WordPiece/BERT models
+- `BertTokenizer.Create(Stream vocabStream, BertOptions?)` — for WordPiece/BERT models
+- `LlamaTokenizer.Create(Stream)` — for SentencePiece models (XLMRoberta, T5, etc.)
 - `BpeTokenizer.Create(Stream vocab, Stream? merges)` — for GPT-2/BPE models
 
-Our `LoadTokenizer()` currently supports `vocab.txt` files (BertTokenizer). Support for BPE tokenizers can be added by detecting the file format — see [extending.md](extending.md).
+Rather than requiring users to know which tokenizer type their model uses, `LoadTokenizer()` uses a **smart resolution** strategy via a single `TokenizerPath` property:
+
+1. **Directory with `tokenizer_config.json`** → reads the HuggingFace config's `tokenizer_class` field (e.g., `"BertTokenizer"`, `"XLMRobertaTokenizer"`, `"GPT2Tokenizer"`), maps it to the appropriate `Microsoft.ML.Tokenizers` class, and loads sibling vocab files. Also applies config options like `do_lower_case`.
+2. **Directory without config** → scans for known files (`vocab.txt` → BERT, `tokenizer.model` → SentencePiece).
+3. **`tokenizer_config.json` file** → same as (1), uses the file's parent directory for sibling resolution.
+4. **Direct vocab file** → infers type from extension (`.txt` → BERT, `.model` → SentencePiece).
+5. **Pre-constructed `Tokenizer` instance** → the `Tokenizer` property on `TextTokenizerOptions` bypasses all resolution. Use this for exotic formats or shared tokenizer instances.
+
+This design mirrors HuggingFace's `AutoTokenizer.from_pretrained(path)` pattern — one input, smart resolution — while keeping the API surface minimal (two properties: `Tokenizer` and `TokenizerPath`).
+
+## Modularization: Why Decompose Into Three Transforms
+
+The original monolithic `OnnxTextEmbeddingTransformer` bundled tokenization, ONNX inference, and pooling into a single class. This was refactored into three composable transforms:
+
+| Transform | Responsibility | Reusability |
+|-----------|---------------|-------------|
+| `TextTokenizerTransformer` | Text → token IDs + attention mask | Any transformer model |
+| `OnnxTextModelScorerTransformer` | Token columns → raw ONNX output | Any transformer ONNX model |
+| `EmbeddingPoolingTransformer` | Raw output → pooled embedding | Embedding generation |
+
+### Why Modularize?
+
+1. **Composability**: ML.NET's design is composable pipelines of single-responsibility transforms. The monolith violated this.
+2. **Reusability**: Tokenization and model scoring are universal — every transformer task (classification, NER, QA, reranking) starts with tokenized text fed through an ONNX model. Only the post-processing differs.
+3. **Inspectability**: Users can inspect intermediate results (what tokens were produced? what does the raw model output look like?).
+4. **Extensibility**: Adding a new task (e.g., text classification) requires only a new post-processing transform, not a new end-to-end pipeline.
+5. **Testability**: Each transform can be unit-tested in isolation.
+
+### Why Keep the Facade?
+
+The `OnnxTextEmbeddingEstimator`/`OnnxTextEmbeddingTransformer` remain as a convenience facade that chains all three transforms internally. This preserves the existing public API (zero breaking changes) while allowing advanced users to compose the transforms directly.
+
+### Lazy vs Eager Evaluation
+
+The modular transforms use **lazy evaluation** via custom `IDataView`/cursor wrappers. `Transform()` returns a wrapping `IDataView` — no data is materialized. Computation happens on-demand when a cursor iterates.
+
+The facade's `GenerateEmbeddings()` (used by MEAI) uses **eager evaluation** via the transforms' direct faces (`Tokenize()` → `Score()` → `Pool()`), bypassing `IDataView` entirely for zero-overhead batch processing.
+
+### Memory Tradeoff
+
+Lazy evaluation eliminates the intermediate materialization concern. Peak memory is bounded by `BatchSize × rowSize` (~6 MB for batch=32 with a 384-dim model), regardless of dataset size. The scorer cursor achieves batch throughput via lookahead batching — reading N rows ahead, running a single `session.Run()`, then serving cached results one at a time.

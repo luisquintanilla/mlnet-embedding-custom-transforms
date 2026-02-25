@@ -31,6 +31,9 @@ bld/
 *.onnx
 !*.Onnx/
 
+# Tokenizer vocab files (downloaded with models)
+samples/*/models/*.txt
+
 # ML.NET saved models
 *.mlnet
 *.zip

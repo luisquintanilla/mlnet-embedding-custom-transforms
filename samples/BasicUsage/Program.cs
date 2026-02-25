@@ -127,6 +127,102 @@ Console.WriteLine($"  \"{meaiTexts[0]}\" vs \"{meaiTexts[1]}\": {sim01:F4}");
 Console.WriteLine($"  \"{meaiTexts[0]}\" vs \"{meaiTexts[2]}\": {sim02:F4}");
 Console.WriteLine("  (.NET topics should be more similar to each other than to cooking)");
 
+// --- 5. Composable Pipeline ---
+Console.WriteLine($"\n5. Composable Pipeline");
+Console.WriteLine(new string('-', 40));
+
+var tokenizerEstimator = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
+{
+    TokenizerPath = vocabPath,
+    InputColumnName = "Text",
+    MaxTokenLength = 128
+});
+var tokenizerTransformer = tokenizerEstimator.Fit(dataView);
+var tokenizedData = tokenizerTransformer.Transform(dataView);
+
+var scorerEstimator = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+{
+    ModelPath = modelPath,
+    MaxTokenLength = 128,
+    BatchSize = 8
+});
+var scorerTransformer = scorerEstimator.Fit(tokenizedData);
+var scoredData = scorerTransformer.Transform(tokenizedData);
+
+Console.WriteLine($"  Hidden dimension: {scorerTransformer.HiddenDim}");
+Console.WriteLine($"  Pre-pooled output: {scorerTransformer.HasPooledOutput}");
+
+var poolerEstimator = mlContext.Transforms.PoolEmbedding(new EmbeddingPoolingOptions
+{
+    Pooling = PoolingStrategy.MeanPooling,
+    Normalize = true,
+    HiddenDim = scorerTransformer.HiddenDim,
+    IsPrePooled = scorerTransformer.HasPooledOutput,
+    SequenceLength = scorerTransformer.HasPooledOutput ? 1 : 128
+});
+var poolerTransformer = poolerEstimator.Fit(scoredData);
+var composableResult = poolerTransformer.Transform(scoredData);
+
+var composableEmbeddings = mlContext.Data.CreateEnumerable<EmbeddingResult>(composableResult, reuseRowObject: false).ToList();
+
+// Verify composable pipeline matches convenience API
+float maxCompDiff = 0;
+for (int i = 0; i < embeddings.Count; i++)
+{
+    for (int d = 0; d < embeddings[i].Embedding.Length; d++)
+    {
+        float diff = MathF.Abs(embeddings[i].Embedding[d] - composableEmbeddings[i].Embedding[d]);
+        maxCompDiff = MathF.Max(maxCompDiff, diff);
+    }
+}
+Console.WriteLine($"  Max difference vs convenience API: {maxCompDiff:E2} (should be ~0)");
+
+// Cleanup
+scorerTransformer.Dispose();
+
+// --- 6. Chained Estimator Pipeline ---
+Console.WriteLine($"\n6. Chained Estimator Pipeline (.Append)");
+Console.WriteLine(new string('-', 40));
+
+// The idiomatic ML.NET pattern: chain estimators with .Append(),
+// then Fit + Transform the whole pipeline at once.
+// Note: pooling options require model dimensions upfront (384 for MiniLM).
+var chainedPipeline = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
+    {
+        TokenizerPath = vocabPath,
+        InputColumnName = "Text",
+        MaxTokenLength = 128
+    })
+    .Append(mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+    {
+        ModelPath = modelPath,
+        MaxTokenLength = 128,
+        BatchSize = 8
+    }))
+    .Append(mlContext.Transforms.PoolEmbedding(new EmbeddingPoolingOptions
+    {
+        Pooling = PoolingStrategy.MeanPooling,
+        Normalize = true,
+        HiddenDim = 384,       // known from model architecture
+        SequenceLength = 128,  // matches MaxTokenLength
+        IsPrePooled = false
+    }));
+
+var chainedModel = chainedPipeline.Fit(dataView);
+var chainedResult = chainedModel.Transform(dataView);
+var chainedEmbeddings = mlContext.Data.CreateEnumerable<EmbeddingResult>(chainedResult, reuseRowObject: false).ToList();
+
+float maxChainDiff = 0;
+for (int i = 0; i < embeddings.Count; i++)
+{
+    for (int d = 0; d < embeddings[i].Embedding.Length; d++)
+    {
+        float diff = MathF.Abs(embeddings[i].Embedding[d] - chainedEmbeddings[i].Embedding[d]);
+        maxChainDiff = MathF.Max(maxChainDiff, diff);
+    }
+}
+Console.WriteLine($"  Max difference vs convenience API: {maxChainDiff:E2} (should be ~0)");
+
 Console.WriteLine("\nDone!");
 
 // Cleanup
