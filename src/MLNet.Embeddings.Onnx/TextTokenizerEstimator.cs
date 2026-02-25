@@ -6,14 +6,26 @@ namespace MLNet.Embeddings.Onnx;
 
 /// <summary>
 /// Configuration for the text tokenizer transform.
+/// Provide either <see cref="Tokenizer"/> (a pre-constructed instance) or
+/// <see cref="TokenizerPath"/> (a file to auto-load). If both are set,
+/// <see cref="Tokenizer"/> takes precedence.
 /// </summary>
 public class TextTokenizerOptions
 {
     /// <summary>
+    /// A pre-constructed tokenizer instance. Use this when working with
+    /// tokenizer formats that LoadTokenizer doesn't support, or when
+    /// sharing a tokenizer across multiple estimators.
+    /// Takes precedence over <see cref="TokenizerPath"/> if both are set.
+    /// </summary>
+    public Tokenizer? Tokenizer { get; set; }
+
+    /// <summary>
     /// Path to the tokenizer vocabulary file.
+    /// Used only when <see cref="Tokenizer"/> is not set.
     /// Supports: vocab.txt (BERT/WordPiece).
     /// </summary>
-    public required string TokenizerPath { get; set; }
+    public string? TokenizerPath { get; set; }
 
     /// <summary>Name of the input text column. Default: "Text".</summary>
     public string InputColumnName { get; set; } = "Text";
@@ -57,7 +69,11 @@ public sealed class TextTokenizerEstimator : IEstimator<TextTokenizerTransformer
         _mlContext = mlContext ?? throw new ArgumentNullException(nameof(mlContext));
         _options = options ?? throw new ArgumentNullException(nameof(options));
 
-        if (!File.Exists(options.TokenizerPath))
+        if (options.Tokenizer == null && options.TokenizerPath == null)
+            throw new ArgumentException(
+                "Either Tokenizer or TokenizerPath must be provided.", nameof(options));
+
+        if (options.Tokenizer == null && !File.Exists(options.TokenizerPath))
             throw new FileNotFoundException($"Tokenizer file not found: {options.TokenizerPath}");
     }
 
@@ -68,7 +84,7 @@ public sealed class TextTokenizerEstimator : IEstimator<TextTokenizerTransformer
             throw new ArgumentException(
                 $"Input schema does not contain column '{_options.InputColumnName}'.");
 
-        var tokenizer = LoadTokenizer(_options.TokenizerPath);
+        var tokenizer = _options.Tokenizer ?? LoadTokenizer(_options.TokenizerPath!);
         return new TextTokenizerTransformer(_mlContext, _options, tokenizer);
     }
 
