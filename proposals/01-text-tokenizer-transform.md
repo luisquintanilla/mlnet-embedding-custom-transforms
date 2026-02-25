@@ -149,6 +149,9 @@ namespace MLNet.Embeddings.Onnx;
 /// <summary>
 /// ML.NET ITransformer that tokenizes text into token IDs, attention masks,
 /// and token type IDs. Produces fixed-length padded/truncated output.
+///
+/// Lazy evaluation: Transform() returns a wrapping IDataView that tokenizes
+/// rows on-demand as a cursor iterates. No data is materialized upfront.
 /// </summary>
 public sealed class TextTokenizerTransformer : ITransformer
 {
@@ -170,16 +173,13 @@ public sealed class TextTokenizerTransformer : ITransformer
         _tokenizer = tokenizer;
     }
 
+    /// <summary>
+    /// ML.NET face: returns a wrapping IDataView. No computation happens here.
+    /// Tokenization occurs lazily when a cursor iterates the returned IDataView.
+    /// </summary>
     public IDataView Transform(IDataView input)
     {
-        // 1. Read all text from input column
-        var texts = ReadTextColumn(input);
-
-        // 2. Tokenize all texts
-        var tokenized = Tokenize(texts);
-
-        // 3. Build output IDataView with original text + token columns
-        return BuildOutputDataView(texts, tokenized);
+        return new TokenizerDataView(input, _tokenizer, _options);
     }
 
     /// <summary>
@@ -205,7 +205,6 @@ public sealed class TextTokenizerTransformer : ITransformer
             {
                 tokenIds[s] = tokens[s];
                 attentionMask[s] = 1;
-                // tokenTypeIds stays 0 (single-segment)
             }
 
             allTokenIds[i] = tokenIds;
@@ -217,50 +216,204 @@ public sealed class TextTokenizerTransformer : ITransformer
         return new TokenizedBatch(allTokenIds, allAttentionMasks, allTokenTypeIds, seqLen);
     }
 
-    public DataViewSchema GetOutputSchema(DataViewSchema inputSchema) { /* standard */ }
+    public DataViewSchema GetOutputSchema(DataViewSchema inputSchema)
+    {
+        var builder = new DataViewSchema.Builder();
+        builder.AddColumns(inputSchema);
+
+        var seqLen = _options.MaxTokenLength;
+        builder.AddColumn(_options.TokenIdsColumnName,
+            new VectorDataViewType(NumberDataViewType.Int64, seqLen));
+        builder.AddColumn(_options.AttentionMaskColumnName,
+            new VectorDataViewType(NumberDataViewType.Int64, seqLen));
+        if (_options.OutputTokenTypeIds)
+            builder.AddColumn(_options.TokenTypeIdsColumnName,
+                new VectorDataViewType(NumberDataViewType.Int64, seqLen));
+
+        return builder.ToSchema();
+    }
+
     public IRowToRowMapper GetRowToRowMapper(DataViewSchema inputSchema)
         => throw new NotSupportedException();
     void ICanSaveModel.Save(ModelSaveContext ctx)
         => throw new NotSupportedException();
+}
+```
 
-    private List<string> ReadTextColumn(IDataView dataView)
+## Lazy IDataView and Cursor
+
+```csharp
+/// <summary>
+/// Wrapping IDataView that adds tokenized columns to the upstream schema.
+/// No data is materialized — tokenization happens in the cursor.
+/// </summary>
+internal sealed class TokenizerDataView : IDataView
+{
+    private readonly IDataView _input;
+    private readonly Tokenizer _tokenizer;
+    private readonly TextTokenizerOptions _options;
+
+    public DataViewSchema Schema { get; }
+    public bool CanShuffle => false;
+    public long? GetRowCount() => _input.GetRowCount();
+
+    internal TokenizerDataView(IDataView input, Tokenizer tokenizer, TextTokenizerOptions options)
     {
-        // Same pattern as current OnnxTextEmbeddingTransformer.ReadTextColumn()
+        _input = input;
+        _tokenizer = tokenizer;
+        _options = options;
+
+        // Build schema: input columns + token columns
+        var builder = new DataViewSchema.Builder();
+        builder.AddColumns(input.Schema);
+
+        int seqLen = options.MaxTokenLength;
+        builder.AddColumn(options.TokenIdsColumnName,
+            new VectorDataViewType(NumberDataViewType.Int64, seqLen));
+        builder.AddColumn(options.AttentionMaskColumnName,
+            new VectorDataViewType(NumberDataViewType.Int64, seqLen));
+        if (options.OutputTokenTypeIds)
+            builder.AddColumn(options.TokenTypeIdsColumnName,
+                new VectorDataViewType(NumberDataViewType.Int64, seqLen));
+
+        Schema = builder.ToSchema();
     }
 
-    private IDataView BuildOutputDataView(
-        IReadOnlyList<string> texts,
-        TokenizedBatch tokenized)
+    public DataViewRowCursor GetRowCursor(IEnumerable<DataViewSchema.Column> columnsNeeded, Random? rand = null)
     {
-        var rows = new List<TokenizedRow>(texts.Count);
-        for (int i = 0; i < texts.Count; i++)
-        {
-            rows.Add(new TokenizedRow
-            {
-                Text = texts[i],
-                TokenIds = tokenized.TokenIds[i],
-                AttentionMask = tokenized.AttentionMasks[i],
-                TokenTypeIds = tokenized.TokenTypeIds?[i] ?? []
-            });
-        }
-        return _mlContext.Data.LoadFromEnumerable(rows);
+        // Determine which upstream columns are needed
+        var upstreamColumns = columnsNeeded
+            .Where(c => _input.Schema.GetColumnOrNull(c.Name) != null)
+            .Select(c => _input.Schema[c.Name]);
+
+        // Always need the text column for tokenization
+        var textCol = _input.Schema[_options.InputColumnName];
+        var allUpstream = upstreamColumns.Append(textCol).Distinct();
+
+        var inputCursor = _input.GetRowCursor(allUpstream, rand);
+        return new TokenizerCursor(this, inputCursor, _tokenizer, _options);
     }
 
-    private sealed class TokenizedRow
+    public DataViewRowCursor[] GetRowCursorSet(
+        IEnumerable<DataViewSchema.Column> columnsNeeded, int n, Random? rand = null)
     {
-        public string Text { get; set; } = "";
-
-        [VectorType]
-        public long[] TokenIds { get; set; } = [];
-
-        [VectorType]
-        public long[] AttentionMask { get; set; } = [];
-
-        [VectorType]
-        public long[] TokenTypeIds { get; set; } = [];
+        // Single cursor — tokenization is cheap, parallelism not needed
+        return [GetRowCursor(columnsNeeded, rand)];
     }
 }
 
+/// <summary>
+/// Cursor that tokenizes one row at a time from the upstream input cursor.
+/// Tokenization is cheap (~microseconds per row), so no batching is needed.
+/// </summary>
+internal sealed class TokenizerCursor : DataViewRowCursor
+{
+    private readonly TokenizerDataView _parent;
+    private readonly DataViewRowCursor _inputCursor;
+    private readonly Tokenizer _tokenizer;
+    private readonly TextTokenizerOptions _options;
+
+    // Current row's tokenized output (computed on MoveNext)
+    private long[]? _currentTokenIds;
+    private long[]? _currentAttentionMask;
+    private long[]? _currentTokenTypeIds;
+
+    public override DataViewSchema Schema => _parent.Schema;
+    public override long Position => _inputCursor.Position;
+    public override long Batch => _inputCursor.Batch;
+
+    internal TokenizerCursor(
+        TokenizerDataView parent,
+        DataViewRowCursor inputCursor,
+        Tokenizer tokenizer,
+        TextTokenizerOptions options)
+    {
+        _parent = parent;
+        _inputCursor = inputCursor;
+        _tokenizer = tokenizer;
+        _options = options;
+    }
+
+    public override bool MoveNext()
+    {
+        if (!_inputCursor.MoveNext())
+            return false;
+
+        // Read text from upstream cursor
+        var textCol = _inputCursor.Schema[_options.InputColumnName];
+        var getter = _inputCursor.GetGetter<ReadOnlyMemory<char>>(textCol);
+        ReadOnlyMemory<char> textValue = default;
+        getter(ref textValue);
+        string text = textValue.ToString();
+
+        // Tokenize this single row
+        int seqLen = _options.MaxTokenLength;
+        _currentTokenIds = new long[seqLen];
+        _currentAttentionMask = new long[seqLen];
+        _currentTokenTypeIds = _options.OutputTokenTypeIds ? new long[seqLen] : null;
+
+        var tokens = _tokenizer.EncodeToIds(text, seqLen, out _, out _);
+        for (int s = 0; s < tokens.Count && s < seqLen; s++)
+        {
+            _currentTokenIds[s] = tokens[s];
+            _currentAttentionMask[s] = 1;
+        }
+
+        return true;
+    }
+
+    public override ValueGetter<TValue> GetGetter<TValue>(DataViewSchema.Column column)
+    {
+        // For input passthrough columns, delegate to upstream cursor
+        var inputCol = _inputCursor.Schema.GetColumnOrNull(column.Name);
+        if (inputCol != null && column.Name != _options.TokenIdsColumnName
+            && column.Name != _options.AttentionMaskColumnName
+            && column.Name != _options.TokenTypeIdsColumnName)
+        {
+            return _inputCursor.GetGetter<TValue>(inputCol.Value);
+        }
+
+        // For tokenized output columns, return computed values
+        if (column.Name == _options.TokenIdsColumnName)
+            return MakeVBufferGetter<TValue>(() => _currentTokenIds!);
+        if (column.Name == _options.AttentionMaskColumnName)
+            return MakeVBufferGetter<TValue>(() => _currentAttentionMask!);
+        if (column.Name == _options.TokenTypeIdsColumnName)
+            return MakeVBufferGetter<TValue>(() => _currentTokenTypeIds ?? new long[_options.MaxTokenLength]);
+
+        throw new InvalidOperationException($"Unknown column: {column.Name}");
+    }
+
+    private static ValueGetter<TValue> MakeVBufferGetter<TValue>(Func<long[]> dataSource)
+    {
+        // Cast to ValueGetter<VBuffer<long>> and reinterpret
+        ValueGetter<VBuffer<long>> getter = (ref VBuffer<long> value) =>
+        {
+            var data = dataSource();
+            var editor = VBufferEditor.Create(ref value, data.Length);
+            data.AsSpan().CopyTo(editor.Values);
+            value = editor.Commit();
+        };
+        return (ValueGetter<TValue>)(object)getter;
+    }
+
+    public override ValueGetter<DataViewRowId> GetIdGetter()
+        => _inputCursor.GetIdGetter();
+
+    public override bool IsColumnActive(DataViewSchema.Column column) => true;
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+            _inputCursor.Dispose();
+        base.Dispose(disposing);
+    }
+}
+```
+
+## Direct Face Data Transfer Type
+
+```csharp
 /// <summary>
 /// Batch of tokenized text. Used by the direct face to pass data between transforms
 /// without IDataView overhead.
@@ -289,25 +442,38 @@ internal sealed class TokenizedBatch
 | Source | What to Extract | Target |
 |--------|----------------|--------|
 | `OnnxTextEmbeddingEstimator.LoadTokenizer()` | Tokenizer loading logic | `TextTokenizerEstimator.LoadTokenizer()` |
-| `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 145-154 | Tokenization loop | `TextTokenizerTransformer.Tokenize()` |
-| `OnnxTextEmbeddingTransformer.ReadTextColumn()` | Text column reading | `TextTokenizerTransformer.ReadTextColumn()` |
+| `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 145-154 | Tokenization loop | `TextTokenizerTransformer.Tokenize()` (direct face) and `TokenizerCursor.MoveNext()` |
+| `OnnxTextEmbeddingTransformer.ReadTextColumn()` | Text column reading pattern | `TokenizerCursor.MoveNext()` (cursor-based, per-row) |
 
 ## Column Passthrough Strategy
 
-The tokenizer reads only the `InputColumnName` column but the output IDataView should contain:
-- The original text column (passed through)
-- TokenIds (new)
-- AttentionMask (new)
-- TokenTypeIds (new, optional)
+The lazy `TokenizerDataView` schema includes ALL input columns plus the new token columns. The cursor delegates getter calls for input columns to the upstream cursor — true passthrough with zero copy. Only the new token columns are computed by the cursor.
 
-Other input columns are NOT passed through. This simplifies the implementation and avoids the complexity of generic column forwarding. The facade handles reconstructing the full output.
+This is simpler and more correct than the eager approach (which had to explicitly enumerate and copy input columns).
+
+## Approach D Migration Notes
+
+When migrating to ML.NET, this transform becomes:
+
+```
+TextTokenizerTransformer : OneToOneTransformerBase
+  Mapper : OneToOneMapperBase
+    MakeGetter() → the tokenization logic from TokenizerCursor.MoveNext()
+    GetOutputColumnsCore() → column definitions
+    SaveModel() → serialize tokenizer vocab + options
+```
+
+The `TokenizerDataView`, `TokenizerCursor`, and all schema/getter boilerplate get **deleted** — the base class handles cursor creation, schema propagation, column passthrough, and threading automatically.
 
 ## Acceptance Criteria
 
 1. `TextTokenizerEstimator` can be created with a valid tokenizer path
 2. `Fit()` validates the input schema has the text column
-3. `Transform()` produces an IDataView with TokenIds, AttentionMask, TokenTypeIds columns
-4. Token arrays are padded to MaxTokenLength with zeros
-5. Attention masks are 1 for real tokens, 0 for padding
-6. `Tokenize()` (direct face) returns the same results without IDataView overhead
-7. Works with vocab.txt (BertTokenizer)
+3. `Transform()` returns a wrapping IDataView (no materialization)
+4. Iterating the cursor produces TokenIds, AttentionMask, TokenTypeIds columns
+5. Token arrays are padded to MaxTokenLength with zeros
+6. Attention masks are 1 for real tokens, 0 for padding
+7. Input columns are passed through via cursor delegation (zero copy)
+8. `Tokenize()` (direct face) returns the same results without IDataView overhead
+9. Works with vocab.txt (BertTokenizer)
+10. Memory usage is O(1) per row, not O(N) for N total rows

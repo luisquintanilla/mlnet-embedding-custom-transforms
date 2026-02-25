@@ -125,6 +125,13 @@ public sealed class EmbeddingGeneratorEstimator : IEstimator<EmbeddingGeneratorT
 
 ### Transformer
 
+The `EmbeddingGeneratorTransformer` uses **eager evaluation** (not the lazy IDataView/cursor pattern used by the three core transforms). This is deliberate:
+
+- `IEmbeddingGenerator.GenerateAsync()` is inherently batch-oriented — there's no concept of a per-row cursor
+- Remote providers (OpenAI, Azure) want batch calls, not per-row calls
+- The async/sync bridge (`GetAwaiter().GetResult()`) is best amortized over batches
+- For ONNX specifically, users should prefer the three-way composable pipeline for lazy evaluation
+
 ```csharp
 namespace MLNet.Embeddings.Onnx;
 

@@ -49,24 +49,29 @@ build-test
 | File | Lines (est.) |
 |------|-------------|
 | `src/MLNet.Embeddings.Onnx/TextTokenizerEstimator.cs` | ~120 |
-| `src/MLNet.Embeddings.Onnx/TextTokenizerTransformer.cs` | ~150 |
+| `src/MLNet.Embeddings.Onnx/TextTokenizerTransformer.cs` | ~300 (includes TokenizerDataView + TokenizerCursor) |
 
 ### Code to Extract From
 - `OnnxTextEmbeddingEstimator.LoadTokenizer()` → `TextTokenizerEstimator.LoadTokenizer()`
-- `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 145-154 → `TextTokenizerTransformer.Tokenize()`
-- `OnnxTextEmbeddingTransformer.ReadTextColumn()` → `TextTokenizerTransformer.ReadTextColumn()`
+- `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 145-154 → `TextTokenizerTransformer.Tokenize()` (direct face) and `TokenizerCursor.MoveNext()`
+- `OnnxTextEmbeddingTransformer.ReadTextColumn()` → cursor-based per-row reading in `TokenizerCursor`
 
 ### Types to Create
 - `TextTokenizerOptions` — options class
 - `TextTokenizerEstimator` — IEstimator<TextTokenizerTransformer>
 - `TextTokenizerTransformer` — ITransformer
+- `TokenizerDataView` — wrapping IDataView (lazy, no materialization)
+- `TokenizerCursor` — row-by-row tokenization cursor
 - `TokenizedBatch` — internal data transfer type for direct face
 
 ### Acceptance Criteria
 - [ ] Tokenizer loads from vocab.txt
-- [ ] Transform produces TokenIds, AttentionMask, TokenTypeIds columns
+- [ ] `Transform()` returns wrapping IDataView (no materialization)
+- [ ] Cursor produces TokenIds, AttentionMask, TokenTypeIds per row
 - [ ] Padding/truncation works correctly at MaxTokenLength boundary
+- [ ] Input columns are passed through via cursor delegation
 - [ ] Direct face `Tokenize()` returns same results as ML.NET face
+- [ ] Memory is O(1) per row
 - [ ] Builds without errors
 
 ---
@@ -81,26 +86,31 @@ build-test
 | File | Lines (est.) |
 |------|-------------|
 | `src/MLNet.Embeddings.Onnx/OnnxTextModelScorerEstimator.cs` | ~140 |
-| `src/MLNet.Embeddings.Onnx/OnnxTextModelScorerTransformer.cs` | ~200 |
+| `src/MLNet.Embeddings.Onnx/OnnxTextModelScorerTransformer.cs` | ~450 (includes ScorerDataView + ScorerCursor with lookahead batching) |
 
 ### Code to Extract From
 - `OnnxTextEmbeddingEstimator.DiscoverModelMetadata()` → `OnnxTextModelScorerEstimator.DiscoverModelMetadata()`
 - `OnnxTextEmbeddingEstimator.FindTensorName()` / `TryFindTensorName()` → same methods on scorer estimator
-- `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 156-189 → `OnnxTextModelScorerTransformer.ProcessBatch()`
+- `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 156-189 → `RunOnnxBatch()` shared by cursor and direct face
 
 ### Types to Create
 - `OnnxTextModelScorerOptions` — options class
 - `OnnxTextModelScorerEstimator` — IEstimator<OnnxTextModelScorerTransformer>
 - `OnnxTextModelScorerTransformer` — ITransformer, IDisposable
+- `ScorerDataView` — wrapping IDataView (lazy, no materialization)
+- `ScorerCursor` — lookahead batching cursor (reads N rows, runs batch ONNX, serves one at a time)
 - `OnnxModelMetadata` — internal record for discovered tensor metadata
 
 ### Acceptance Criteria
 - [ ] Auto-discovers input/output tensor names from ONNX metadata
 - [ ] Manual tensor name overrides work
-- [ ] Reads token columns from IDataView
+- [ ] `Transform()` returns wrapping IDataView (no materialization)
+- [ ] Cursor reads token columns via lookahead batching (configurable BatchSize)
+- [ ] Upstream passthrough columns are cached for the current batch window
 - [ ] Runs ONNX inference in configurable batch sizes
 - [ ] Outputs correct shape: `float[hiddenDim]` (pre-pooled) or `float[seqLen × hiddenDim]` (unpooled)
-- [ ] Direct face `Score()` returns same results
+- [ ] Direct face `Score()` returns same results as ML.NET face
+- [ ] Peak memory ~6 MB regardless of dataset size
 - [ ] `Dispose()` disposes InferenceSession
 - [ ] Builds without errors
 
@@ -116,15 +126,17 @@ build-test
 | File | Lines (est.) |
 |------|-------------|
 | `src/MLNet.Embeddings.Onnx/EmbeddingPoolingEstimator.cs` | ~100 |
-| `src/MLNet.Embeddings.Onnx/EmbeddingPoolingTransformer.cs` | ~130 |
+| `src/MLNet.Embeddings.Onnx/EmbeddingPoolingTransformer.cs` | ~280 (includes PoolerDataView + PoolerCursor) |
 
 ### Code to Extract From
-- `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 173-183 → `EmbeddingPoolingTransformer.Pool()`
+- `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 173-183 → `EmbeddingPoolingTransformer.Pool()` (direct face) and `PoolerCursor.MoveNext()`
 
 ### Types to Create
 - `EmbeddingPoolingOptions` — options class
 - `EmbeddingPoolingEstimator` — IEstimator<EmbeddingPoolingTransformer>
 - `EmbeddingPoolingTransformer` — ITransformer
+- `PoolerDataView` — wrapping IDataView (lazy, no materialization)
+- `PoolerCursor` — per-row pooling cursor (lockstep with upstream, direct passthrough delegation)
 
 ### Files NOT Modified
 - `EmbeddingPooling.cs` — unchanged, continues to provide static math
@@ -134,9 +146,13 @@ build-test
 - [ ] Mean, CLS, and Max pooling produce correct results
 - [ ] Pre-pooled pass-through works (only normalizes)
 - [ ] L2 normalization is optional
+- [ ] `Transform()` returns wrapping IDataView (no materialization)
+- [ ] Cursor processes in lockstep with upstream (no lookahead needed)
+- [ ] Passthrough columns delegate directly to upstream cursor
 - [ ] Auto-configures from scorer metadata when used via facade
 - [ ] Validates HiddenDim and SequenceLength in options
-- [ ] Direct face `Pool()` returns same results
+- [ ] Direct face `Pool()` returns same results as ML.NET face
+- [ ] Memory is O(1) per row
 - [ ] Builds without errors
 
 ---
@@ -184,8 +200,8 @@ build-test
 
 ### What Changes
 - Fields: replace `_session`, `_tokenizer`, tensor names → `_tokenizer`, `_scorer`, `_pooler` sub-transforms
-- `Transform()`: chains `_tokenizer.Transform() → _scorer.Transform() → _pooler.Transform()`
-- `GenerateEmbeddings()`: chains direct faces `Tokenize() → Score() → Pool()`
+- `Transform()`: chains wrapping DataViews: `_tokenizer.Transform() → _scorer.Transform() → _pooler.Transform()` (all lazy, no materialization until cursor is iterated)
+- `GenerateEmbeddings()`: chains direct faces `Tokenize() → Score() → Pool()` (eager, batch-oriented)
 - `EmbeddingDimension`: delegates to `_scorer.HiddenDim`
 - `Dispose()`: disposes `_scorer` (which disposes InferenceSession)
 

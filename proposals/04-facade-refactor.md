@@ -244,9 +244,11 @@ public sealed class OnnxTextEmbeddingTransformer : ITransformer, IDisposable
 
 The MEAI path (`GenerateEmbeddings()`) chains the three transforms' **direct faces** (`Tokenize()` → `Score()` → `Pool()`), never touching IDataView. This preserves the current performance characteristics: batch-oriented, minimal allocation, SIMD-accelerated pooling.
 
-### Transform() chains IDataView faces
+### Transform() chains wrapping IDataViews (lazy)
 
-The ML.NET pipeline path (`Transform()`) chains the three transforms' **IDataView faces**. This materializes intermediate data (token arrays, raw output) as IDataView columns. This is the composability trade-off: inspectable intermediates cost memory.
+The ML.NET pipeline path (`Transform()`) chains the three transforms' **IDataView faces**. Each `Transform()` returns a wrapping IDataView — no materialization occurs until a consumer iterates the cursor. The cursor chain (PoolerCursor → ScorerCursor → TokenizerCursor → InputCursor) processes data lazily with the scorer using lookahead batching for ONNX throughput.
+
+This means `Transform()` is **O(1) in time and memory** — it just wraps. All computation happens on cursor iteration. Peak memory is ~6 MB per batch regardless of dataset size.
 
 ### Sub-transforms are exposed internally
 

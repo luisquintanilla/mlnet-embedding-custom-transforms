@@ -38,7 +38,11 @@ See [implementation-plan.md](implementation-plan.md) for the ordered task list w
 
 ## Tradeoffs
 
-See [tradeoffs.md](tradeoffs.md) for a detailed analysis of what this costs and what it gains.
+See [tradeoffs.md](tradeoffs.md) for a detailed analysis. Key takeaway: lazy evaluation eliminates the memory concern — peak memory matches the monolith (~6 MB). The main cost is implementation complexity (~520 lines of IDataView/cursor boilerplate), which is temporary scaffolding deleted during migration to ML.NET.
+
+## ML.NET Migration Path
+
+See [migration-to-mlnet.md](migration-to-mlnet.md) for a detailed Approach C → Approach D migration plan. Core business logic carries over unchanged; ~740 lines of boilerplate get deleted and replaced by ~150 lines of base class overrides.
 
 ## Future Task Expansion
 

@@ -58,48 +58,40 @@ var pipeline = mlContext.Transforms.TextEmbedding(openAIGenerator);
 
 ## What You Lose
 
-### 1. Memory: Intermediate IDataView Materialization
+### 1. ~~Memory: Intermediate IDataView Materialization~~ → SOLVED by Lazy Evaluation
 
-The monolith processes batches of 32 with method-local arrays. The modular ML.NET pipeline materializes ALL intermediate data as IDataView columns.
+The original concern was that eager modular transforms would materialize ALL intermediate data
+as IDataView columns, leading to ~1.9 GB peak memory for 10K rows with unpooled models.
 
-| Scenario | Monolith Peak Memory | Modular Peak Memory | Ratio |
-|----------|---------------------|--------------------:|------:|
-| 100 rows, unpooled model (384-dim, 128-seq) | ~6 MB | ~9 MB | 1.5x |
-| 1K rows, unpooled model | ~6 MB | ~73 MB | 12x |
-| 10K rows, unpooled model | ~6 MB | ~700 MB | 117x |
-| 100K rows, unpooled model | ~6 MB | ~7 GB | 1167x |
-| 10K rows, pre-pooled model | ~6 MB | ~20 MB | 3.3x |
+**Lazy evaluation eliminates this entirely.** Each transform's `Transform()` returns a wrapping
+IDataView that computes values on-demand. The scorer cursor uses lookahead batching to maintain
+ONNX batch throughput while only keeping one batch of data in memory.
 
-**Calculation for unpooled model (10K rows):**
-- TokenIds: 10K × 128 × 8 bytes = 10 MB
-- AttentionMask: 10K × 128 × 8 bytes = 10 MB
-- TokenTypeIds: 10K × 128 × 8 bytes = 10 MB
-- RawOutput: 10K × 128 × 384 × 4 bytes = **1.9 GB** ← dominates
-- But: these are sequential. TokenIds can be GC'd after scoring. Net peak ≈ 700 MB for tokens + raw output simultaneously.
+| Scenario | Monolith | Modular Lazy | Ratio |
+|----------|----------|-------------|------:|
+| Any row count, unpooled model (384-dim, 128-seq) | ~6 MB | ~6 MB | 1.0x |
+| Any row count, pre-pooled model | ~2 MB | ~2 MB | 1.0x |
 
-**Mitigation:** The `GenerateEmbeddings()` direct face (used by MEAI generator and the facade) does NOT pay this cost. It uses the three transforms' internal direct faces which process batch-by-batch with transient arrays — same memory profile as the monolith.
+Peak memory is bounded by `BatchSize × rowSize`, regardless of total row count. Same as the
+current monolith.
 
-**Who pays the cost:** Only users who use the composable ML.NET pipeline path (`mlContext.Transforms.TokenizeText().Append().Append()`). The convenience facade and MEAI path are unaffected.
+### 2. Allocation Pressure — Bounded
 
-### 2. Allocation Pressure
+With lazy evaluation, per-row arrays exist only for the current batch (32 rows by default).
+Previous batches are eligible for GC. Total allocations per batch:
 
-Each row gets its own per-row arrays for IDataView columns:
-- `long[128]` for TokenIds (1 per row)
-- `long[128]` for AttentionMask (1 per row)
-- `long[128]` for TokenTypeIds (1 per row)
-- `float[128 × 384]` for RawOutput (1 per row, unpooled)
-- `float[384]` for Embedding (1 per row)
+- Tokenizer: 32 × `long[128]` for TokenIds + AttentionMask = ~64 arrays
+- Scorer: 32 × `float[seqLen × hiddenDim]` for raw output = ~32 arrays
+- Pooler: 32 × `float[hiddenDim]` for embedding = ~32 arrays
 
-For 10K rows: ~50K array allocations (vs. ~300 per-batch allocations in the monolith).
-
-**Mitigation:** Same as memory — direct faces avoid per-row allocation.
+This is ~128 arrays per batch cycle — comparable to the monolith's ~300 per-batch allocations.
 
 ### 3. Batch Reconstruction Overhead
 
 The monolith builds batch tensors directly from text. The modular path:
-1. Tokenizer creates per-row arrays
-2. Scorer reads per-row arrays from IDataView cursor
-3. Scorer copies per-row arrays into batch-sized flat arrays for ONNX
+1. Tokenizer cursor creates per-row arrays
+2. Scorer cursor reads per-row arrays from upstream tokenizer cursor
+3. Scorer cursor copies per-row arrays into batch-sized flat arrays for ONNX
 4. After ONNX, scorer unpacks batch output into per-row arrays
 
 Step 3 is an extra copy per direction that the monolith avoids.
@@ -120,21 +112,45 @@ var scorerOpts = new OnnxTextModelScorerOptions { TokenIdsColumnName = "InputIds
 
 **Mitigation:** Default column names are consistent across all three transforms (`"TokenIds"`, `"AttentionMask"`, `"TokenTypeIds"`, `"RawOutput"`, `"Embedding"`). Mismatches only occur if the user explicitly overrides names inconsistently. The facade eliminates this entirely by wiring up column names internally.
 
-### 5. Complexity
+### 5. Implementation Complexity
 
-6 new files (3 estimators, 3 transformers) + refactoring of 2 existing files, plus a new `TokenizedBatch` type and `OnnxModelMetadata` record.
+Each transform requires custom `IDataView` + `DataViewRowCursor` + getter delegate boilerplate:
 
-**Mitigation:** Each file is focused and small. The individual transforms are simpler than the monolith because they each do one thing. Total code may increase by ~30%, but cyclomatic complexity per file decreases.
+| Transform | Custom Types | Lines (est.) | Notes |
+|-----------|-------------|-------------|-------|
+| Tokenizer | `TokenizerDataView`, `TokenizerCursor` | ~150 | Simple row-by-row |
+| Scorer | `ScorerDataView`, `ScorerCursor` | ~250 | Complex: lookahead batching + upstream caching |
+| Pooler | `PoolerDataView`, `PoolerCursor` | ~120 | Simple row-by-row, passthrough delegation |
+
+Total boilerplate: ~520 lines across the three transforms.
+
+**This boilerplate is temporary scaffolding.** When migrating to ML.NET (Approach D), all
+custom IDataView/cursor classes are deleted and replaced by `RowToRowTransformerBase` /
+`MapperBase` overrides. See [migration-to-mlnet.md](migration-to-mlnet.md).
+
+### 6. Scorer Cursor Complexity: Upstream Column Caching
+
+The scorer cursor reads ahead N rows for lookahead batching. This means the upstream cursor
+has advanced past those rows. When the downstream consumer (pooler) asks for passthrough
+column values via the scorer cursor, we can't delegate to the upstream cursor — it's pointing
+at a different row.
+
+**Solution:** The scorer cursor caches all passthrough column values for the current batch.
+This is ~32 rows of text strings and token arrays — typically < 1 MB. The caching logic adds
+~50 lines of code and is the most subtle part of the implementation.
+
+The pooler cursor does NOT have this problem because it processes in lockstep with upstream.
 
 ## Summary
 
 | Dimension | Impact | Who's Affected | Mitigation |
 |-----------|--------|---------------|------------|
-| Memory (IDataView path) | 🔴 Significant for large datasets + unpooled models | Composable pipeline users only | Use facade/MEAI path; direct faces have same memory as monolith |
-| Allocation pressure | 🟡 Moderate | Composable pipeline users only | Direct faces avoid per-row allocation |
-| Batch copy overhead | 🟢 Negligible | Everyone using IDataView path | <0.1% of total processing time |
+| Memory | 🟢 Same as monolith (~6 MB) | Nobody | Lazy evaluation with lookahead batching |
+| Allocation pressure | 🟢 Bounded per-batch | Nobody | Same order as monolith |
+| Batch copy overhead | 🟢 Negligible | Everyone | <0.1% of total processing time |
 | Misconfiguration | 🟡 Moderate | Composable pipeline users | Consistent defaults; facade eliminates it |
-| Complexity | 🟡 More files | Maintainers | Each file is simpler; single responsibility |
+| Impl complexity | 🟡 ~520 lines boilerplate | Maintainers | Temporary — deleted in Approach D migration |
+| Scorer caching | 🟡 Subtle logic | Maintainers | Well-isolated in ScorerCursor |
 | Composability | 🟢 Major gain | All users | New capability |
 | Reusability | 🟢 Major gain | Future task implementations | Tokenizer + scorer shared across tasks |
 | Provider flexibility | 🟢 Major gain | Users wanting remote providers | EmbeddingGeneratorEstimator |

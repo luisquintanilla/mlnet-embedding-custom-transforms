@@ -221,6 +221,12 @@ namespace MLNet.Embeddings.Onnx;
 /// <summary>
 /// ML.NET ITransformer that runs ONNX inference on tokenized text inputs.
 /// Task-agnostic — outputs the raw model tensor for downstream post-processing.
+///
+/// Lazy evaluation with lookahead batching: Transform() returns a wrapping IDataView.
+/// The cursor reads ahead BatchSize rows from the upstream tokenizer cursor,
+/// runs a single ONNX session.Run() call, then serves results one at a time.
+/// This gives batch throughput (~1ms/item at batch=32) with lazy memory semantics
+/// (~6 MB peak instead of ~1.9 GB for 10K rows).
 /// </summary>
 public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
 {
@@ -254,16 +260,13 @@ public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
         _metadata = metadata;
     }
 
+    /// <summary>
+    /// ML.NET face: returns a wrapping IDataView. No computation happens here.
+    /// ONNX inference occurs lazily in the cursor via lookahead batching.
+    /// </summary>
     public IDataView Transform(IDataView input)
     {
-        // 1. Read token columns from input
-        var (tokenIds, attentionMasks, tokenTypeIds) = ReadTokenColumns(input);
-
-        // 2. Run ONNX inference in batches
-        var rawOutputs = Score(tokenIds, attentionMasks, tokenTypeIds);
-
-        // 3. Build output IDataView with original columns + raw output column
-        return BuildOutputDataView(input, rawOutputs);
+        return new ScorerDataView(input, this);
     }
 
     /// <summary>
@@ -275,7 +278,10 @@ public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
         return Score(batch.TokenIds, batch.AttentionMasks, batch.TokenTypeIds);
     }
 
-    private float[][] Score(long[][] tokenIds, long[][] attentionMasks, long[][]? tokenTypeIds)
+    /// <summary>
+    /// Runs ONNX inference in batches. Used by both the direct face and the cursor.
+    /// </summary>
+    internal float[][] Score(long[][] tokenIds, long[][] attentionMasks, long[][]? tokenTypeIds)
     {
         int totalRows = tokenIds.Length;
         int batchSize = _options.BatchSize;
@@ -285,7 +291,7 @@ public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
         for (int start = 0; start < totalRows; start += batchSize)
         {
             int count = Math.Min(batchSize, totalRows - start);
-            var batchOutputs = ProcessBatch(
+            var batchOutputs = RunOnnxBatch(
                 tokenIds, attentionMasks, tokenTypeIds,
                 start, count, seqLen);
             allOutputs.AddRange(batchOutputs);
@@ -294,7 +300,11 @@ public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
         return [.. allOutputs];
     }
 
-    private float[][] ProcessBatch(
+    /// <summary>
+    /// Runs a single ONNX inference batch. Core inference logic shared by
+    /// the direct face and the cursor's lookahead batching.
+    /// </summary>
+    internal float[][] RunOnnxBatch(
         long[][] tokenIds, long[][] attentionMasks, long[][]? tokenTypeIds,
         int startIdx, int batchSize, int seqLen)
     {
@@ -327,25 +337,18 @@ public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
             var output = results[0];
             var outputSpan = output.GetTensorDataAsSpan<float>();
 
-            // Extract per-row output tensors
             var batchOutputs = new float[batchSize][];
 
             if (_metadata.HasPooledOutput)
             {
-                // Pre-pooled: shape [batchSize, hiddenDim] → one float[hiddenDim] per row
                 for (int b = 0; b < batchSize; b++)
-                {
                     batchOutputs[b] = outputSpan.Slice(b * _metadata.HiddenDim, _metadata.HiddenDim).ToArray();
-                }
             }
             else
             {
-                // Unpooled: shape [batchSize, seqLen, hiddenDim] → one float[seqLen * hiddenDim] per row
                 int rowSize = seqLen * _metadata.HiddenDim;
                 for (int b = 0; b < batchSize; b++)
-                {
                     batchOutputs[b] = outputSpan.Slice(b * rowSize, rowSize).ToArray();
-                }
             }
 
             return batchOutputs;
@@ -357,50 +360,21 @@ public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
         }
     }
 
-    private (long[][] tokenIds, long[][] attentionMasks, long[][]? tokenTypeIds) ReadTokenColumns(IDataView input)
+    public DataViewSchema GetOutputSchema(DataViewSchema inputSchema)
     {
-        // Read VBuffer<long> columns from IDataView via cursor
-        var tokenIdsList = new List<long[]>();
-        var attentionMaskList = new List<long[]>();
-        var tokenTypeIdsList = _options.TokenTypeIdsColumnName != null ? new List<long[]>() : null;
+        var builder = new DataViewSchema.Builder();
+        builder.AddColumns(inputSchema);
 
-        var tokenIdsCol = input.Schema[_options.TokenIdsColumnName];
-        var attMaskCol = input.Schema[_options.AttentionMaskColumnName];
-        var typeIdsCol = _options.TokenTypeIdsColumnName != null
-            ? input.Schema[_options.TokenTypeIdsColumnName] : default;
+        int outputSize = _metadata.HasPooledOutput
+            ? _metadata.HiddenDim
+            : _options.MaxTokenLength * _metadata.HiddenDim;
 
-        var activeColumns = new List<DataViewSchema.Column> { tokenIdsCol, attMaskCol };
-        if (typeIdsCol.Name != null)
-            activeColumns.Add(typeIdsCol);
+        builder.AddColumn(_options.OutputColumnName,
+            new VectorDataViewType(NumberDataViewType.Single, outputSize));
 
-        using var cursor = input.GetRowCursor(activeColumns);
-        var tokenIdsGetter = cursor.GetGetter<VBuffer<long>>(tokenIdsCol);
-        var attMaskGetter = cursor.GetGetter<VBuffer<long>>(attMaskCol);
-        var typeIdsGetter = typeIdsCol.Name != null
-            ? cursor.GetGetter<VBuffer<long>>(typeIdsCol) : null;
-
-        VBuffer<long> tokenIdsBuffer = default;
-        VBuffer<long> attMaskBuffer = default;
-        VBuffer<long> typeIdsBuffer = default;
-
-        while (cursor.MoveNext())
-        {
-            tokenIdsGetter(ref tokenIdsBuffer);
-            attMaskGetter(ref attMaskBuffer);
-            tokenIdsList.Add(tokenIdsBuffer.DenseValues().ToArray());
-            attentionMaskList.Add(attMaskBuffer.DenseValues().ToArray());
-
-            if (typeIdsGetter != null)
-            {
-                typeIdsGetter(ref typeIdsBuffer);
-                tokenTypeIdsList!.Add(typeIdsBuffer.DenseValues().ToArray());
-            }
-        }
-
-        return (tokenIdsList.ToArray(), attentionMaskList.ToArray(), tokenTypeIdsList?.ToArray());
+        return builder.ToSchema();
     }
 
-    public DataViewSchema GetOutputSchema(DataViewSchema inputSchema) { /* standard */ }
     public IRowToRowMapper GetRowToRowMapper(DataViewSchema inputSchema)
         => throw new NotSupportedException();
     void ICanSaveModel.Save(ModelSaveContext ctx)
@@ -410,6 +384,281 @@ public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
 }
 ```
 
+## Lazy IDataView and Cursor with Lookahead Batching
+
+This is the most complex cursor in the pipeline. It reads ahead `BatchSize` rows from the
+upstream tokenizer cursor, packs them into a single ONNX batch, runs inference once, then
+serves results one at a time. This gives batch throughput with lazy memory semantics.
+
+```csharp
+/// <summary>
+/// Wrapping IDataView that adds ONNX model output to the upstream schema.
+/// No inference happens here — it's all in the cursor.
+/// </summary>
+internal sealed class ScorerDataView : IDataView
+{
+    private readonly IDataView _input;
+    private readonly OnnxTextModelScorerTransformer _scorer;
+
+    public DataViewSchema Schema { get; }
+    public bool CanShuffle => false;
+    public long? GetRowCount() => _input.GetRowCount();
+
+    internal ScorerDataView(IDataView input, OnnxTextModelScorerTransformer scorer)
+    {
+        _input = input;
+        _scorer = scorer;
+
+        var builder = new DataViewSchema.Builder();
+        builder.AddColumns(input.Schema);
+
+        int outputSize = scorer.HasPooledOutput
+            ? scorer.HiddenDim
+            : scorer.Options.MaxTokenLength * scorer.HiddenDim;
+
+        builder.AddColumn(scorer.Options.OutputColumnName,
+            new VectorDataViewType(NumberDataViewType.Single, outputSize));
+
+        Schema = builder.ToSchema();
+    }
+
+    public DataViewRowCursor GetRowCursor(IEnumerable<DataViewSchema.Column> columnsNeeded, Random? rand = null)
+    {
+        // Always need token columns from upstream for inference
+        var options = _scorer.Options;
+        var upstreamCols = new List<DataViewSchema.Column>();
+
+        // Add all requested passthrough columns
+        foreach (var col in columnsNeeded)
+        {
+            var inputCol = _input.Schema.GetColumnOrNull(col.Name);
+            if (inputCol != null)
+                upstreamCols.Add(inputCol.Value);
+        }
+
+        // Always need token columns for ONNX inference
+        upstreamCols.Add(_input.Schema[options.TokenIdsColumnName]);
+        upstreamCols.Add(_input.Schema[options.AttentionMaskColumnName]);
+        if (options.TokenTypeIdsColumnName != null)
+            upstreamCols.Add(_input.Schema[options.TokenTypeIdsColumnName]);
+
+        var inputCursor = _input.GetRowCursor(upstreamCols.Distinct(), rand);
+        return new ScorerCursor(this, inputCursor, _scorer);
+    }
+
+    public DataViewRowCursor[] GetRowCursorSet(
+        IEnumerable<DataViewSchema.Column> columnsNeeded, int n, Random? rand = null)
+    {
+        // Single cursor — ONNX session handles internal threading
+        return [GetRowCursor(columnsNeeded, rand)];
+    }
+}
+
+/// <summary>
+/// Cursor with lookahead batching for ONNX inference.
+///
+/// State machine:
+///   1. When the cached batch is exhausted, read ahead BatchSize rows from upstream
+///   2. Pack token arrays into flat batch tensors
+///   3. Run a single session.Run() call
+///   4. Cache the batch results
+///   5. Serve cached results one at a time via MoveNext()
+///
+/// Memory: only one batch of ONNX output is alive at any time (~6 MB for batch=32,
+/// seqLen=128, hiddenDim=384). Previous batches are eligible for GC.
+/// </summary>
+internal sealed class ScorerCursor : DataViewRowCursor
+{
+    private readonly ScorerDataView _parent;
+    private readonly DataViewRowCursor _inputCursor;
+    private readonly OnnxTextModelScorerTransformer _scorer;
+
+    // Lookahead batch state
+    private float[][]? _batchResults;
+    private long[][]? _batchAttentionMasks;  // kept for downstream pooling passthrough
+    private int _batchIndex = -1;
+    private int _batchCount = 0;
+    private long _position = -1;
+    private bool _inputExhausted = false;
+
+    // Cached upstream column values for current batch
+    // (needed for passthrough — we read ahead, so we must cache)
+    private readonly List<Dictionary<string, object>> _batchUpstreamValues = new();
+
+    public override DataViewSchema Schema => _parent.Schema;
+    public override long Position => _position;
+    public override long Batch => 0;
+
+    internal ScorerCursor(
+        ScorerDataView parent,
+        DataViewRowCursor inputCursor,
+        OnnxTextModelScorerTransformer scorer)
+    {
+        _parent = parent;
+        _inputCursor = inputCursor;
+        _scorer = scorer;
+    }
+
+    public override bool MoveNext()
+    {
+        _batchIndex++;
+
+        if (_batchResults == null || _batchIndex >= _batchCount)
+        {
+            if (_inputExhausted)
+                return false;
+
+            // Read ahead BatchSize rows from upstream
+            if (!FillNextBatch())
+                return false;
+        }
+
+        _position++;
+        return true;
+    }
+
+    private bool FillNextBatch()
+    {
+        var options = _scorer.Options;
+        int seqLen = options.MaxTokenLength;
+        int batchSize = options.BatchSize;
+
+        var tokenIdsBatch = new List<long[]>();
+        var attMaskBatch = new List<long[]>();
+        var typeIdsBatch = new List<long[]>();
+        _batchUpstreamValues.Clear();
+
+        // Read ahead from upstream cursor
+        var tokenIdsGetter = _inputCursor.GetGetter<VBuffer<long>>(
+            _inputCursor.Schema[options.TokenIdsColumnName]);
+        var attMaskGetter = _inputCursor.GetGetter<VBuffer<long>>(
+            _inputCursor.Schema[options.AttentionMaskColumnName]);
+        var typeIdsGetter = options.TokenTypeIdsColumnName != null
+            ? _inputCursor.GetGetter<VBuffer<long>>(
+                _inputCursor.Schema[options.TokenTypeIdsColumnName])
+            : null;
+
+        VBuffer<long> tokenIdsBuffer = default;
+        VBuffer<long> attMaskBuffer = default;
+        VBuffer<long> typeIdsBuffer = default;
+
+        for (int i = 0; i < batchSize; i++)
+        {
+            if (!_inputCursor.MoveNext())
+            {
+                _inputExhausted = true;
+                break;
+            }
+
+            tokenIdsGetter(ref tokenIdsBuffer);
+            attMaskGetter(ref attMaskBuffer);
+            tokenIdsBatch.Add(tokenIdsBuffer.DenseValues().ToArray());
+            attMaskBatch.Add(attMaskBuffer.DenseValues().ToArray());
+
+            if (typeIdsGetter != null)
+            {
+                typeIdsGetter(ref typeIdsBuffer);
+                typeIdsBatch.Add(typeIdsBuffer.DenseValues().ToArray());
+            }
+
+            // Cache upstream column values for passthrough
+            // (implementation detail: cache text and other columns for this row)
+            CacheUpstreamValues();
+        }
+
+        if (tokenIdsBatch.Count == 0)
+            return false;
+
+        // Run ONNX inference on the batch
+        _batchResults = _scorer.RunOnnxBatch(
+            tokenIdsBatch.ToArray(),
+            attMaskBatch.ToArray(),
+            typeIdsBatch.Count > 0 ? typeIdsBatch.ToArray() : null,
+            startIdx: 0,
+            batchSize: tokenIdsBatch.Count,
+            seqLen: seqLen);
+
+        _batchAttentionMasks = attMaskBatch.ToArray();
+        _batchIndex = 0;
+        _batchCount = tokenIdsBatch.Count;
+        return true;
+    }
+
+    private void CacheUpstreamValues()
+    {
+        // Cache all passthrough column values from the upstream cursor
+        // for the current row, so they can be served when the downstream
+        // consumer requests them via GetGetter.
+        // Implementation stores per-row dictionaries keyed by column name.
+    }
+
+    public override ValueGetter<TValue> GetGetter<TValue>(DataViewSchema.Column column)
+    {
+        // For the raw output column, return the cached ONNX result
+        if (column.Name == _scorer.Options.OutputColumnName)
+        {
+            ValueGetter<VBuffer<float>> getter = (ref VBuffer<float> value) =>
+            {
+                var data = _batchResults![_batchIndex];
+                var editor = VBufferEditor.Create(ref value, data.Length);
+                data.AsSpan().CopyTo(editor.Values);
+                value = editor.Commit();
+            };
+            return (ValueGetter<TValue>)(object)getter;
+        }
+
+        // For passthrough columns, return cached upstream values
+        // (we can't delegate to _inputCursor because it's already advanced past this row)
+        return GetCachedUpstreamGetter<TValue>(column);
+    }
+
+    private ValueGetter<TValue> GetCachedUpstreamGetter<TValue>(DataViewSchema.Column column)
+    {
+        // Return a getter that reads from the cached upstream values
+        // for the current _batchIndex position.
+        // Implementation depends on column type (text, VBuffer<long>, etc.)
+        throw new NotImplementedException("Getter for cached upstream column");
+    }
+
+    public override ValueGetter<DataViewRowId> GetIdGetter()
+    {
+        return (ref DataViewRowId value) =>
+            value = new DataViewRowId((ulong)_position, 0);
+    }
+
+    public override bool IsColumnActive(DataViewSchema.Column column) => true;
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+            _inputCursor.Dispose();
+        base.Dispose(disposing);
+    }
+}
+```
+
+### Lookahead Batching: Why It Matters
+
+| Approach | Memory (10K rows, unpooled) | ONNX throughput | Per-item latency |
+|----------|---------------------------|-----------------|------------------|
+| Eager (materialize all) | ~1.9 GB | ✅ Full batching | ~1ms |
+| Lazy, no batching | ~200 KB | ❌ 15x slower | ~15ms |
+| **Lazy, lookahead batch** | **~6 MB** | **✅ Full batching** | **~1ms** |
+
+The lookahead cursor achieves the same throughput as the monolith by buffering one batch
+at a time. Previous batches are eligible for GC, so peak memory is bounded by `BatchSize × rowSize`.
+
+### Upstream Column Caching
+
+The lookahead pattern creates a subtle problem: when the cursor reads ahead N rows from
+upstream, the upstream cursor advances past those rows. When the downstream consumer later
+asks for passthrough column values (e.g., the Text column), we can't delegate to the upstream
+cursor because it's pointing at row N, not row 0.
+
+Solution: the cursor caches all passthrough column values for the current batch. This costs
+memory proportional to one batch's worth of upstream data (typically small — text strings
+and token arrays for 32 rows).
+
 ## Code to Extract From Existing Files
 
 | Source | What to Extract | Target |
@@ -417,15 +666,15 @@ public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
 | `OnnxTextEmbeddingEstimator.DiscoverModelMetadata()` | Tensor auto-discovery | `OnnxTextModelScorerEstimator.DiscoverModelMetadata()` |
 | `OnnxTextEmbeddingEstimator.FindTensorName()` | Tensor name lookup | `OnnxTextModelScorerEstimator.FindTensorName()` |
 | `OnnxTextEmbeddingEstimator.TryFindTensorName()` | Tensor name lookup | `OnnxTextModelScorerEstimator.TryFindTensorName()` |
-| `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 156-189 | ONNX input/output and inference | `OnnxTextModelScorerTransformer.ProcessBatch()` |
+| `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 156-189 | ONNX batch inference | `OnnxTextModelScorerTransformer.RunOnnxBatch()` |
 
 ## Key Design Decisions
 
 ### Raw output is always per-row
 
-The scorer unpacks the batch ONNX output into per-row `float[]` arrays. For unpooled models, each row gets a `float[seqLen × hiddenDim]` array. This is the memory trade-off discussed in [tradeoffs.md](tradeoffs.md).
-
-For pre-pooled models, each row gets `float[hiddenDim]` — identical to the final embedding.
+The scorer unpacks the batch ONNX output into per-row `float[]` arrays. With lazy evaluation,
+only one batch of per-row arrays exists at a time. For unpooled models, each batch is
+`BatchSize × float[seqLen × hiddenDim]` ≈ 6 MB. Previous batches are GC'd.
 
 ### No pooling inside the scorer
 
@@ -435,18 +684,50 @@ The scorer is task-agnostic. It doesn't know if the downstream consumer wants me
 
 `HiddenDim`, `HasPooledOutput`, and `Metadata` are exposed so downstream transforms (like `EmbeddingPoolingTransformer`) can auto-configure themselves. The facade uses this to wire up the pooling transform without requiring the user to specify dimensions manually.
 
-### Batching is preserved
+### RunOnnxBatch is internal, shared between faces
 
-The scorer batches inference calls (default 32 rows per batch). It reads all token arrays from the IDataView first (eager), then processes in batches. This matches the current monolith's batching strategy.
+The `RunOnnxBatch()` method is the core inference logic. It's used by:
+- The direct face (`Score()`) for MEAI/facade usage
+- The cursor (`FillNextBatch()`) for lazy ML.NET pipeline usage
+
+This avoids code duplication between the two paths.
+
+## Approach D Migration Notes
+
+When migrating to ML.NET, this transform becomes:
+
+```
+OnnxTextModelScorerTransformer : RowToRowTransformerBase
+  Mapper : MapperBase
+    MakeGetter() → lookahead batching cache + RunOnnxBatch()
+    GetOutputColumnsCore() → output column definition
+    GetDependenciesCore() → token column dependencies
+    SaveModel() → embed ONNX model bytes via ctx.SaveBinaryStream()
+  [LoadableClass] attributes (4 variants for save/load registry)
+  static Create() factory for loading
+```
+
+The `ScorerDataView` and `ScorerCursor` classes get **deleted** — `RowToRowTransformerBase`
+provides cursor creation and schema propagation. The lookahead batching logic moves into
+`MakeGetter()` — the getter maintains a batch cache and refills it when exhausted, identical
+to the cursor's `FillNextBatch()` pattern.
+
+**Key advantage of Approach D:** `MapperBase` automatically handles:
+- `GetRowCursorSet()` for parallel cursor access
+- Column activity tracking (only compute requested columns)
+- Thread-safe cursor creation
+- Schema propagation with proper metadata
 
 ## Acceptance Criteria
 
 1. `OnnxTextModelScorerEstimator` can be created with a valid ONNX model path
 2. `Fit()` validates that token columns exist in the input schema
 3. `Fit()` auto-discovers ONNX tensor metadata (input/output names, dimensions)
-4. `Transform()` reads token columns, runs ONNX inference, outputs raw model tensor
-5. Output shape is `float[hiddenDim]` for pre-pooled models, `float[seqLen × hiddenDim]` for unpooled
-6. Batching works correctly (processes BatchSize rows per ONNX Run call)
-7. `Score()` (direct face) returns the same results without IDataView overhead
-8. `Dispose()` disposes the `InferenceSession`
-9. Manual tensor name overrides work for non-standard models
+4. `Transform()` returns a wrapping IDataView (no materialization)
+5. Cursor uses lookahead batching (reads BatchSize rows, single session.Run())
+6. Output shape is `float[hiddenDim]` for pre-pooled models, `float[seqLen × hiddenDim]` for unpooled
+7. Passthrough columns are cached and served correctly
+8. `Score()` (direct face) returns the same results without IDataView overhead
+9. `Dispose()` disposes the `InferenceSession`
+10. Manual tensor name overrides work for non-standard models
+11. Peak memory is bounded by BatchSize × rowSize, not totalRows × rowSize
