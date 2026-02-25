@@ -31,6 +31,7 @@ See [architecture.md](architecture.md) for the full component diagram and data f
 - [03-embedding-pooling-transform.md](03-embedding-pooling-transform.md) — EmbeddingPoolingEstimator / EmbeddingPoolingTransformer
 - [04-facade-refactor.md](04-facade-refactor.md) — OnnxTextEmbeddingEstimator / OnnxTextEmbeddingTransformer refactoring
 - [05-meai-integration.md](05-meai-integration.md) — OnnxEmbeddingGenerator and IEmbeddingGenerator-backed transform
+- [06-post-modularization-samples.md](06-post-modularization-samples.md) — Samples requiring the composable pipeline (pooling comparison, intermediate inspection, MEAI provider-agnostic)
 
 ## Implementation Order
 
