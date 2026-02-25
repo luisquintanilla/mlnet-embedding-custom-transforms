@@ -4,6 +4,9 @@
     <Project Path="samples/BgeSmallEmbedding/BgeSmallEmbedding.csproj" />
     <Project Path="samples/E5SmallEmbedding/E5SmallEmbedding.csproj" />
     <Project Path="samples/GteSmallEmbedding/GteSmallEmbedding.csproj" />
+    <Project Path="samples/ComposablePoolingComparison/ComposablePoolingComparison.csproj" />
+    <Project Path="samples/IntermediateInspection/IntermediateInspection.csproj" />
+    <Project Path="samples/MeaiProviderAgnostic/MeaiProviderAgnostic.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/MLNet.Embeddings.Onnx/MLNet.Embeddings.Onnx.csproj" />

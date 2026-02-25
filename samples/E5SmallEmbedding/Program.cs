@@ -1,32 +1,15 @@
 using System.Numerics.Tensors;
-using Microsoft.Extensions.AI;
 using Microsoft.ML;
 using MLNet.Embeddings.Onnx;
 
 var modelPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "models", "model.onnx"));
-var vocabPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "models", "vocab.txt"));
+var tokenizerPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "models"));
 
 Console.WriteLine("=== E5-Small-v2 Embedding Sample ===\n");
+Console.WriteLine("This sample demonstrates the composable modular pipeline with E5's");
+Console.WriteLine("dual query:/passage: prefix pattern for asymmetric retrieval.\n");
 
 var mlContext = new MLContext();
-
-// --- 1. Standard embedding (no prefix) ---
-Console.WriteLine("1. Standard Embedding (no prefix)");
-Console.WriteLine(new string('-', 40));
-
-var options = new OnnxTextEmbeddingOptions
-{
-    ModelPath = modelPath,
-    TokenizerPath = vocabPath,
-    InputColumnName = "Text",
-    OutputColumnName = "Embedding",
-    MaxTokenLength = 128,
-    Pooling = PoolingStrategy.MeanPooling,
-    Normalize = true,
-    BatchSize = 8
-};
-
-var estimator = new OnnxTextEmbeddingEstimator(mlContext, options);
 
 var sampleData = new[]
 {
@@ -37,11 +20,45 @@ var sampleData = new[]
 };
 
 var dataView = mlContext.Data.LoadFromEnumerable(sampleData);
-var transformer = estimator.Fit(dataView);
-Console.WriteLine($"  Embedding dimension: {transformer.EmbeddingDimension}");
 
-var transformed = transformer.Transform(dataView);
-var embeddings = mlContext.Data.CreateEnumerable<EmbeddingResult>(transformed, reuseRowObject: false).ToList();
+// --- 1. Composable Pipeline: TokenizeText → ScoreOnnxTextModel → PoolEmbedding ---
+Console.WriteLine("1. Composable Modular Pipeline");
+Console.WriteLine(new string('-', 40));
+
+// Step 1: Tokenize
+var tokenizer = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
+{
+    TokenizerPath = tokenizerPath, // directory — auto-detects tokenizer
+    InputColumnName = "Text",
+    MaxTokenLength = 128
+}).Fit(dataView);
+var tokenized = tokenizer.Transform(dataView);
+
+// Step 2: Score with ONNX
+var scorer = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+{
+    ModelPath = modelPath,
+    MaxTokenLength = 128,
+    BatchSize = 8
+}).Fit(tokenized);
+var scored = scorer.Transform(tokenized);
+
+Console.WriteLine($"  Hidden dimension: {scorer.HiddenDim}");
+Console.WriteLine($"  Has pre-pooled output: {scorer.HasPooledOutput}");
+
+// Step 3: Pool with mean pooling + L2 normalization
+var pooler = mlContext.Transforms.PoolEmbedding(new EmbeddingPoolingOptions
+{
+    Pooling = PoolingStrategy.MeanPooling,
+    Normalize = true,
+    HiddenDim = scorer.HiddenDim,
+    IsPrePooled = scorer.HasPooledOutput,
+    SequenceLength = scorer.HasPooledOutput ? 0 : 128
+}).Fit(scored);
+var pooled = pooler.Transform(scored);
+
+var embeddings = mlContext.Data.CreateEnumerable<EmbeddingResult>(pooled, reuseRowObject: false).ToList();
+Console.WriteLine($"  Embedding dimension: {embeddings[0].Embedding.Length}\n");
 
 for (int i = 0; i < embeddings.Count; i++)
     for (int j = i + 1; j < embeddings.Count; j++)
@@ -55,6 +72,15 @@ Console.WriteLine("\n2. Retrieval with E5 Prefixes");
 Console.WriteLine(new string('-', 40));
 Console.WriteLine("  E5 uses 'query: ' for queries and 'passage: ' for documents.");
 
+// Helper: embed a batch of texts through the shared pipeline
+IList<EmbeddingResult> Embed(TextData[] texts)
+{
+    var dv = mlContext.Data.LoadFromEnumerable(texts);
+    return mlContext.Data.CreateEnumerable<EmbeddingResult>(
+        pooler.Transform(scorer.Transform(tokenizer.Transform(dv))),
+        reuseRowObject: false).ToList();
+}
+
 // Embed passages WITH "passage: " prefix
 var passages = new[]
 {
@@ -62,12 +88,8 @@ var passages = new[]
     new TextData { Text = "passage: Bread baking requires flour, water, yeast, and salt." },
     new TextData { Text = "passage: Neural networks are inspired by biological neurons." }
 };
+var passageEmbeddings = Embed(passages);
 
-var passageView = mlContext.Data.LoadFromEnumerable(passages);
-var passageTransformed = transformer.Transform(passageView);
-var passageEmbeddings = mlContext.Data.CreateEnumerable<EmbeddingResult>(passageTransformed, reuseRowObject: false).ToList();
-
-// Original passage texts for display
 var passageTexts = new[]
 {
     "Machine learning is a subset of artificial intelligence.",
@@ -77,10 +99,7 @@ var passageTexts = new[]
 
 // Query WITHOUT prefix
 Console.WriteLine("  Without 'query: ' prefix:");
-var queryNoPrefix = new[] { new TextData { Text = "What is AI?" } };
-var queryNoPrefixView = mlContext.Data.LoadFromEnumerable(queryNoPrefix);
-var queryNoPrefixEmbeddings = mlContext.Data.CreateEnumerable<EmbeddingResult>(
-    transformer.Transform(queryNoPrefixView), reuseRowObject: false).ToList();
+var queryNoPrefixEmbeddings = Embed([new TextData { Text = "What is AI?" }]);
 
 for (int i = 0; i < passageTexts.Length; i++)
 {
@@ -90,10 +109,7 @@ for (int i = 0; i < passageTexts.Length; i++)
 
 // Query WITH "query: " prefix
 Console.WriteLine("  With 'query: ' prefix:");
-var queryWithPrefix = new[] { new TextData { Text = "query: What is AI?" } };
-var queryWithPrefixView = mlContext.Data.LoadFromEnumerable(queryWithPrefix);
-var queryWithPrefixEmbeddings = mlContext.Data.CreateEnumerable<EmbeddingResult>(
-    transformer.Transform(queryWithPrefixView), reuseRowObject: false).ToList();
+var queryWithPrefixEmbeddings = Embed([new TextData { Text = "query: What is AI?" }]);
 
 for (int i = 0; i < passageTexts.Length; i++)
 {
@@ -101,49 +117,68 @@ for (int i = 0; i < passageTexts.Length; i++)
     Console.WriteLine($"    vs \"{passageTexts[i]}\": {sim:F4}");
 }
 
-// --- 3. Save/Load Round-Trip ---
-Console.WriteLine("\n3. Save/Load Round-Trip");
+// --- 3. Chained Estimator Pipeline (.Append) ---
+Console.WriteLine("\n3. Chained Estimator Pipeline (.Append)");
 Console.WriteLine(new string('-', 40));
 
-var savePath = Path.Combine(Path.GetTempPath(), "e5-small-embedding.mlnet");
-Console.WriteLine($"  Saving to: {savePath}");
-transformer.Save(savePath);
-Console.WriteLine($"  File size: {new FileInfo(savePath).Length / 1024 / 1024} MB");
+var chainedPipeline = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
+    {
+        TokenizerPath = tokenizerPath,
+        InputColumnName = "Text",
+        MaxTokenLength = 128
+    })
+    .Append(mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+    {
+        ModelPath = modelPath,
+        MaxTokenLength = 128,
+        BatchSize = 8
+    }))
+    .Append(mlContext.Transforms.PoolEmbedding(new EmbeddingPoolingOptions
+    {
+        Pooling = PoolingStrategy.MeanPooling,
+        Normalize = true,
+        HiddenDim = 384,       // known from E5-small architecture
+        SequenceLength = 128,
+        IsPrePooled = false
+    }));
 
-Console.WriteLine("  Loading from saved file...");
-using var loaded = OnnxTextEmbeddingTransformer.Load(mlContext, savePath);
-Console.WriteLine($"  Loaded embedding dimension: {loaded.EmbeddingDimension}");
+var chainedModel = chainedPipeline.Fit(dataView);
+var chainedResult = chainedModel.Transform(dataView);
+var chainedEmbeddings = mlContext.Data.CreateEnumerable<EmbeddingResult>(chainedResult, reuseRowObject: false).ToList();
 
-var loadedTransformed = loaded.Transform(dataView);
-var loadedEmbeddings = mlContext.Data.CreateEnumerable<EmbeddingResult>(loadedTransformed, reuseRowObject: false).ToList();
-
-float maxDiff = 0;
+float maxChainDiff = 0;
 for (int i = 0; i < embeddings.Count; i++)
     for (int d = 0; d < embeddings[i].Embedding.Length; d++)
-        maxDiff = MathF.Max(maxDiff, MathF.Abs(embeddings[i].Embedding[d] - loadedEmbeddings[i].Embedding[d]));
-Console.WriteLine($"  Max difference after round-trip: {maxDiff:E2} (should be ~0)");
-File.Delete(savePath);
+        maxChainDiff = MathF.Max(maxChainDiff, MathF.Abs(embeddings[i].Embedding[d] - chainedEmbeddings[i].Embedding[d]));
+Console.WriteLine($"  Max difference vs step-by-step pipeline: {maxChainDiff:E2} (should be ~0)");
 
-// --- 4. MEAI IEmbeddingGenerator ---
-Console.WriteLine($"\n4. MEAI IEmbeddingGenerator Usage");
+// --- 4. Convenience Facade (single-shot) ---
+Console.WriteLine($"\n4. Convenience Facade (OnnxTextEmbeddingEstimator)");
 Console.WriteLine(new string('-', 40));
 
-IEmbeddingGenerator<string, Embedding<float>> generator =
-    new OnnxEmbeddingGenerator(mlContext, transformer);
+var facadeEstimator = new OnnxTextEmbeddingEstimator(mlContext, new OnnxTextEmbeddingOptions
+{
+    ModelPath = modelPath,
+    TokenizerPath = tokenizerPath,
+    MaxTokenLength = 128,
+    Pooling = PoolingStrategy.MeanPooling,
+    Normalize = true,
+    BatchSize = 8
+});
+var facadeTransformer = facadeEstimator.Fit(dataView);
+var facadeResult = facadeTransformer.Transform(dataView);
+var facadeEmbeddings = mlContext.Data.CreateEnumerable<EmbeddingResult>(facadeResult, reuseRowObject: false).ToList();
 
-var meaiTexts = new[] { "What is .NET?", "Tell me about the .NET framework", "How to cook pasta" };
-var meaiEmbeddings = await generator.GenerateAsync(meaiTexts);
-
-Console.WriteLine($"  Generated {meaiEmbeddings.Count} embeddings");
-Console.WriteLine($"  Vector dimensions: {meaiEmbeddings[0].Vector.Length}");
-
-float sim01 = TensorPrimitives.CosineSimilarity(meaiEmbeddings[0].Vector.Span, meaiEmbeddings[1].Vector.Span);
-float sim02 = TensorPrimitives.CosineSimilarity(meaiEmbeddings[0].Vector.Span, meaiEmbeddings[2].Vector.Span);
-Console.WriteLine($"  \"{meaiTexts[0]}\" vs \"{meaiTexts[1]}\": {sim01:F4}");
-Console.WriteLine($"  \"{meaiTexts[0]}\" vs \"{meaiTexts[2]}\": {sim02:F4}");
+float maxFacadeDiff = 0;
+for (int i = 0; i < embeddings.Count; i++)
+    for (int d = 0; d < embeddings[i].Embedding.Length; d++)
+        maxFacadeDiff = MathF.Max(maxFacadeDiff, MathF.Abs(embeddings[i].Embedding[d] - facadeEmbeddings[i].Embedding[d]));
+Console.WriteLine($"  Max difference vs composable pipeline: {maxFacadeDiff:E2} (should be ~0)");
+Console.WriteLine("  The facade wraps the same three transforms internally.");
 
 // Cleanup
-transformer.Dispose();
+scorer.Dispose();
+facadeTransformer.Dispose();
 Console.WriteLine("\nDone!");
 
 // --- Domain types ---

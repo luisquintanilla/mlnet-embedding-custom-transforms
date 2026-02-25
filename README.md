@@ -2,12 +2,12 @@
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/luisquintanilla/mlnet-embedding-custom-transforms?quickstart=1)
 
-A custom ML.NET `IEstimator` / `ITransformer` that generates text embeddings using local HuggingFace ONNX models. One call encapsulates the entire pipeline — tokenization, ONNX inference, pooling, and normalization — just like `FeaturizeText` does for classical text features.
+A custom ML.NET `IEstimator` / `ITransformer` that generates text embeddings using local HuggingFace ONNX models. Provides both a **convenience facade** (single estimator) and a **composable modular pipeline** (three independent transforms) for tokenization, ONNX inference, pooling, and normalization.
 
 ```
-Raw text  →  [BertTokenizer]  →  token IDs + attention mask
-          →  [OnnxRuntime]    →  last_hidden_state
-          →  [Mean Pooling]   →  L2-normalized float[384] embedding
+                                            ┌─ MeanPooling ─┐
+Raw text → [TextTokenizer] → token IDs  →  [OnnxScorer] → [Pooling] → L2-normalized embedding
+           (BPE / WordPiece)   + masks      (ONNX Runtime)  └─ CLS / Max ─┘
 ```
 
 ## Why This Exists
@@ -18,10 +18,12 @@ This project implements a custom transform using direct `IEstimator<T>` / `ITran
 
 ## Features
 
-- **Single-shot API** — one estimator encapsulates tokenization → ONNX inference → pooling → normalization
+- **Composable modular pipeline** — three independent transforms (`TokenizeText → ScoreOnnxTextModel → PoolEmbedding`) that can be inspected, swapped, and reused
+- **Convenience facade** — `OnnxTextEmbeddingEstimator` wraps all three transforms in a single call
+- **Provider-agnostic MEAI integration** — `EmbeddingGeneratorEstimator` wraps any `IEmbeddingGenerator<string, Embedding<float>>` as an ML.NET transform
+- **Smart tokenizer resolution** — point to a directory; auto-detects from `tokenizer_config.json` or known vocab files (BPE, SentencePiece, WordPiece)
 - **ONNX auto-discovery** — automatically detects input/output tensor names, shapes, and embedding dimensions from model metadata
 - **Self-contained save/load** — serializes to a portable `.mlnet` zip file containing the ONNX model, tokenizer, and config
-- **MEAI integration** — includes an `IEmbeddingGenerator<string, Embedding<float>>` wrapper for use with Microsoft.Extensions.AI
 - **SIMD-accelerated pooling** — mean pooling and L2 normalization use `TensorPrimitives` for hardware-vectorized math
 - **Configurable batching** — process rows in configurable batch sizes to bound memory usage
 - **Multiple pooling strategies** — Mean, CLS token, and Max pooling
@@ -40,45 +42,75 @@ Invoke-WebRequest -Uri "https://huggingface.co/sentence-transformers/all-MiniLM-
 Invoke-WebRequest -Uri "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/vocab.txt" -OutFile "models/vocab.txt"
 ```
 
-### 2. Use as an ML.NET transform
+### 2. Composable pipeline (modular)
 
 ```csharp
 using Microsoft.ML;
 using MLNet.Embeddings.Onnx;
 
 var mlContext = new MLContext();
-
-var estimator = new OnnxTextEmbeddingEstimator(mlContext, new OnnxTextEmbeddingOptions
-{
-    ModelPath = "models/model.onnx",
-    TokenizerPath = "models/vocab.txt",
-});
-
 var data = mlContext.Data.LoadFromEnumerable(new[]
 {
     new { Text = "What is machine learning?" },
     new { Text = "How to cook pasta" }
 });
 
+// Step-by-step: tokenize → score → pool
+var tokenizer = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
+{
+    TokenizerPath = "models/",  // directory — auto-detects tokenizer
+    InputColumnName = "Text"
+}).Fit(data);
+
+var scorer = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+{
+    ModelPath = "models/model.onnx"
+}).Fit(tokenizer.Transform(data));
+
+var pooler = mlContext.Transforms.PoolEmbedding(new EmbeddingPoolingOptions
+{
+    Pooling = PoolingStrategy.MeanPooling,
+    Normalize = true,
+    HiddenDim = scorer.HiddenDim,
+    IsPrePooled = scorer.HasPooledOutput,
+    SequenceLength = 128
+}).Fit(scorer.Transform(tokenizer.Transform(data)));
+```
+
+Or chain with `.Append()` for the idiomatic ML.NET pattern:
+
+```csharp
+var pipeline = mlContext.Transforms.TokenizeText(tokenizerOpts)
+    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.PoolEmbedding(poolingOpts));
+var model = pipeline.Fit(data);
+```
+
+### 3. Convenience facade (single-shot)
+
+```csharp
+var estimator = new OnnxTextEmbeddingEstimator(mlContext, new OnnxTextEmbeddingOptions
+{
+    ModelPath = "models/model.onnx",
+    TokenizerPath = "models/",
+});
 var transformer = estimator.Fit(data);
 var embeddings = transformer.Transform(data);
 ```
 
-### 3. Use as an MEAI embedding generator
+### 4. Provider-agnostic MEAI embedding
 
 ```csharp
 using Microsoft.Extensions.AI;
-using MLNet.Embeddings.Onnx;
 
+// Works with ANY IEmbeddingGenerator — ONNX, OpenAI, Azure, Ollama...
 IEmbeddingGenerator<string, Embedding<float>> generator =
-    new OnnxEmbeddingGenerator(new MLContext(), transformer);
+    new OnnxEmbeddingGenerator(mlContext, transformer);
 
-var results = await generator.GenerateAsync(["What is .NET?", "Tell me about C#"]);
-float similarity = TensorPrimitives.CosineSimilarity(
-    results[0].Vector.Span, results[1].Vector.Span);
+var estimator = mlContext.Transforms.TextEmbedding(generator);
 ```
 
-### 4. Save and load
+### 5. Save and load
 
 ```csharp
 // Save — bundles ONNX model + tokenizer + config into a portable zip
@@ -93,36 +125,57 @@ var loaded = OnnxTextEmbeddingTransformer.Load(mlContext, "my-embedding-model.ml
 ```
 mlnet-embedding-custom-transforms/
 ├── src/MLNet.Embeddings.Onnx/
-│   ├── OnnxTextEmbeddingOptions.cs      — Configuration POCO with smart defaults
-│   ├── PoolingStrategy.cs               — Mean / CLS / Max pooling enum
-│   ├── OnnxTextEmbeddingEstimator.cs    — IEstimator: validates model, auto-discovers tensors
-│   ├── OnnxTextEmbeddingTransformer.cs  — ITransformer: tokenize → infer → pool → embed
-│   ├── EmbeddingPooling.cs              — SIMD-accelerated pooling via TensorPrimitives
-│   ├── ModelPackager.cs                 — Save/load to self-contained zip
-│   ├── OnnxEmbeddingGenerator.cs        — MEAI IEmbeddingGenerator wrapper
-│   └── MLContextExtensions.cs           — Convenience extension method
+│   ├── TextTokenizerEstimator.cs         — Transform 1: tokenization (BPE/WordPiece/SentencePiece)
+│   ├── OnnxTextModelScorerEstimator.cs   — Transform 2: ONNX inference with lookahead batching
+│   ├── EmbeddingPoolingEstimator.cs      — Transform 3: pooling + L2 normalization
+│   ├── OnnxTextEmbeddingEstimator.cs     — Convenience facade (chains all three)
+│   ├── EmbeddingGeneratorEstimator.cs    — Provider-agnostic MEAI wrapper
+│   ├── OnnxEmbeddingGenerator.cs         — MEAI IEmbeddingGenerator for ONNX models
+│   ├── MLContextExtensions.cs            — Extension methods for fluent API
+│   ├── EmbeddingPooling.cs               — SIMD-accelerated pooling via TensorPrimitives
+│   ├── ModelPackager.cs                  — Save/load to self-contained zip
+│   └── PoolingStrategy.cs               — Mean / CLS / Max pooling enum
 ├── samples/
-│   ├── BasicUsage/                      — all-MiniLM-L6-v2 end-to-end demo
-│   ├── BgeSmallEmbedding/               — BGE-small with query prefix pattern
-│   ├── E5SmallEmbedding/                — E5-small with query/passage prefixes
-│   └── GteSmallEmbedding/               — GTE-small semantic search (no prefix)
-├── docs/                                — Detailed documentation
-│   ├── design-decisions.md              — Why every choice was made
-│   ├── architecture.md                  — Component walkthrough + pipeline stages
-│   ├── tensor-deep-dive.md              — System.Numerics.Tensors for AI workloads
-│   ├── extending.md                     — How to modify and extend
-│   └── references.md                    — All sources and further reading
-└── nuget.config                         — NuGet source (nuget.org only)
+│   ├── BasicUsage/                       — all-MiniLM-L6-v2: all API surfaces
+│   ├── BgeSmallEmbedding/                — BGE-small: query prefix pattern
+│   ├── E5SmallEmbedding/                 — E5-small: query/passage prefixes
+│   ├── GteSmallEmbedding/                — GTE-small: semantic search (no prefix)
+│   ├── ComposablePoolingComparison/      — 3 pooling strategies, shared inference
+│   ├── IntermediateInspection/           — Inspect tokens, masks, raw output
+│   └── MeaiProviderAgnostic/             — Provider-agnostic MEAI transform
+├── docs/                                 — Detailed documentation
+│   ├── design-decisions.md               — Why every choice was made
+│   ├── architecture.md                   — Component walkthrough + pipeline stages
+│   ├── tensor-deep-dive.md               — System.Numerics.Tensors for AI workloads
+│   ├── extending.md                      — How to modify and extend
+│   └── references.md                     — All sources and further reading
+├── proposals/                            — Design proposals for the modular architecture
+└── nuget.config                          — NuGet source (nuget.org only)
 ```
+
+## Samples
+
+| Sample | Model | Pattern Demonstrated |
+|--------|-------|---------------------|
+| [BasicUsage](samples/BasicUsage/) | all-MiniLM-L6-v2 | All API surfaces: facade, composable pipeline, `.Append()`, save/load, MEAI |
+| [BgeSmallEmbedding](samples/BgeSmallEmbedding/) | BGE-small-en-v1.5 | Composable pipeline + BGE query prefix for asymmetric retrieval |
+| [E5SmallEmbedding](samples/E5SmallEmbedding/) | E5-small-v2 | Composable pipeline + E5 dual query:/passage: prefix pattern |
+| [GteSmallEmbedding](samples/GteSmallEmbedding/) | GTE-small | Composable pipeline + semantic search (no prefix needed) |
+| [ComposablePoolingComparison](samples/ComposablePoolingComparison/) | all-MiniLM-L6-v2 | **3 pooling strategies**, shared tokenizer+scorer (key modularization demo) |
+| [IntermediateInspection](samples/IntermediateInspection/) | all-MiniLM-L6-v2 | Inspect token IDs, attention masks, raw output at each pipeline stage |
+| [MeaiProviderAgnostic](samples/MeaiProviderAgnostic/) | all-MiniLM-L6-v2 | `EmbeddingGeneratorEstimator` wrapping `IEmbeddingGenerator` |
 
 ## API at a Glance
 
 | Class | Role | Key Methods |
 |-------|------|-------------|
-| `OnnxTextEmbeddingEstimator` | ML.NET `IEstimator<T>` | `Fit(IDataView)`, `GetOutputSchema()` |
-| `OnnxTextEmbeddingTransformer` | ML.NET `ITransformer` | `Transform(IDataView)`, `Save(path)`, `Load(ctx, path)` |
+| `TextTokenizerEstimator` | Transform 1: Tokenization | `Fit(IDataView)` |
+| `OnnxTextModelScorerEstimator` | Transform 2: ONNX Scoring | `Fit(IDataView)` → `.HiddenDim`, `.HasPooledOutput` |
+| `EmbeddingPoolingEstimator` | Transform 3: Pooling | `Fit(IDataView)` |
+| `OnnxTextEmbeddingEstimator` | Facade (chains 1→2→3) | `Fit(IDataView)`, `GetOutputSchema()` |
+| `OnnxTextEmbeddingTransformer` | Facade transformer | `Transform(IDataView)`, `Save(path)`, `Load(ctx, path)` |
+| `EmbeddingGeneratorEstimator` | MEAI wrapper transform | `Fit(IDataView)` |
 | `OnnxEmbeddingGenerator` | MEAI `IEmbeddingGenerator` | `GenerateAsync(texts)` |
-| `OnnxTextEmbeddingOptions` | Configuration | `ModelPath`, `TokenizerPath`, `Pooling`, `Normalize`, `BatchSize` |
 
 ## Supported Models
 
@@ -145,7 +198,7 @@ Models with `sentence_embedding` output (pre-pooled) are auto-detected and pooli
 |---------|---------|---------|
 | `Microsoft.ML` | 5.0.0 | IEstimator/ITransformer, IDataView, MLContext |
 | `Microsoft.ML.OnnxRuntime` | 1.24.2 | InferenceSession, OrtValue |
-| `Microsoft.ML.Tokenizers` | 2.0.0 | BertTokenizer (WordPiece) |
+| `Microsoft.ML.Tokenizers` | 2.0.0 | BertTokenizer (WordPiece), BPE, SentencePiece |
 | `Microsoft.Extensions.AI.Abstractions` | 10.3.0 | IEmbeddingGenerator |
 | `System.Numerics.Tensors` | 10.0.3 | Tensor\<T\>, TensorPrimitives |
 
