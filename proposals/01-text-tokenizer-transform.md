@@ -18,14 +18,28 @@ namespace MLNet.Embeddings.Onnx;
 
 /// <summary>
 /// Configuration for the text tokenizer transform.
+/// Provide either <see cref="Tokenizer"/> (a pre-constructed instance) or
+/// <see cref="TokenizerPath"/> (a file/directory to auto-load). If both are set,
+/// <see cref="Tokenizer"/> takes precedence.
 /// </summary>
 public class TextTokenizerOptions
 {
     /// <summary>
-    /// Path to the tokenizer vocabulary file.
-    /// Supports: vocab.txt (BERT/WordPiece).
+    /// A pre-constructed tokenizer instance. Use this when working with
+    /// tokenizer formats that LoadTokenizer doesn't support, or when
+    /// sharing a tokenizer across multiple estimators.
+    /// Takes precedence over <see cref="TokenizerPath"/> if both are set.
     /// </summary>
-    public required string TokenizerPath { get; set; }
+    public Tokenizer? Tokenizer { get; set; }
+
+    /// <summary>
+    /// Path to tokenizer artifacts. Can be:
+    /// - A directory containing tokenizer_config.json (HuggingFace auto-detect)
+    /// - A tokenizer_config.json file directly
+    /// - A vocab file: .txt (BERT/WordPiece), .model (SentencePiece)
+    /// Used only when Tokenizer is not set.
+    /// </summary>
+    public string? TokenizerPath { get; set; }
 
     /// <summary>Name of the input text column. Default: "Text".</summary>
     public string InputColumnName { get; set; } = "Text";
@@ -75,8 +89,17 @@ public sealed class TextTokenizerEstimator : IEstimator<TextTokenizerTransformer
         _mlContext = mlContext ?? throw new ArgumentNullException(nameof(mlContext));
         _options = options ?? throw new ArgumentNullException(nameof(options));
 
-        if (!File.Exists(options.TokenizerPath))
-            throw new FileNotFoundException($"Tokenizer file not found: {options.TokenizerPath}");
+        if (options.Tokenizer == null && options.TokenizerPath == null)
+            throw new ArgumentException(
+                "Either Tokenizer or TokenizerPath must be provided.", nameof(options));
+
+        if (options.Tokenizer == null)
+        {
+            var path = options.TokenizerPath!;
+            if (!File.Exists(path) && !Directory.Exists(path))
+                throw new FileNotFoundException(
+                    $"Tokenizer path not found: {path}");
+        }
     }
 
     public TextTokenizerTransformer Fit(IDataView input)
@@ -87,8 +110,8 @@ public sealed class TextTokenizerEstimator : IEstimator<TextTokenizerTransformer
             throw new ArgumentException(
                 $"Input schema does not contain column '{_options.InputColumnName}'.");
 
-        // Load tokenizer (reuse existing LoadTokenizer logic)
-        var tokenizer = LoadTokenizer(_options.TokenizerPath);
+        // Load tokenizer (smart resolution: directory, config, or vocab file)
+        var tokenizer = _options.Tokenizer ?? LoadTokenizer(_options.TokenizerPath!);
 
         return new TextTokenizerTransformer(_mlContext, _options, tokenizer);
     }
@@ -118,8 +141,9 @@ public sealed class TextTokenizerEstimator : IEstimator<TextTokenizerTransformer
         return new SchemaShape(result.Values);
     }
 
-    // Reuse from existing OnnxTextEmbeddingEstimator.LoadTokenizer()
-    internal static Tokenizer LoadTokenizer(string path) { /* same logic */ }
+    // Smart tokenizer resolution: handles directories, config files, and vocab files.
+    // See LoadTokenizer implementation for full resolution rules.
+    internal static Tokenizer LoadTokenizer(string path) { /* smart resolution logic */ }
 
     private static void AddVectorColumn(
         Dictionary<string, SchemaShape.Column> schema,
@@ -441,7 +465,7 @@ internal sealed class TokenizedBatch
 
 | Source | What to Extract | Target |
 |--------|----------------|--------|
-| `OnnxTextEmbeddingEstimator.LoadTokenizer()` | Tokenizer loading logic | `TextTokenizerEstimator.LoadTokenizer()` |
+| `OnnxTextEmbeddingEstimator.LoadTokenizer()` | Tokenizer loading logic (expanded with smart resolution) | `TextTokenizerEstimator.LoadTokenizer()` |
 | `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 145-154 | Tokenization loop | `TextTokenizerTransformer.Tokenize()` (direct face) and `TokenizerCursor.MoveNext()` |
 | `OnnxTextEmbeddingTransformer.ReadTextColumn()` | Text column reading pattern | `TokenizerCursor.MoveNext()` (cursor-based, per-row) |
 
@@ -467,7 +491,7 @@ The `TokenizerDataView`, `TokenizerCursor`, and all schema/getter boilerplate ge
 
 ## Acceptance Criteria
 
-1. `TextTokenizerEstimator` can be created with a valid tokenizer path
+1. `TextTokenizerEstimator` can be created with a valid tokenizer path (file, directory, or config)
 2. `Fit()` validates the input schema has the text column
 3. `Transform()` returns a wrapping IDataView (no materialization)
 4. Iterating the cursor produces TokenIds, AttentionMask, TokenTypeIds columns
@@ -475,5 +499,7 @@ The `TokenizerDataView`, `TokenizerCursor`, and all schema/getter boilerplate ge
 6. Attention masks are 1 for real tokens, 0 for padding
 7. Input columns are passed through via cursor delegation (zero copy)
 8. `Tokenize()` (direct face) returns the same results without IDataView overhead
-9. Works with vocab.txt (BertTokenizer)
-10. Memory usage is O(1) per row, not O(N) for N total rows
+9. Works with vocab.txt (BertTokenizer), SentencePiece (.model), BPE (vocab.json+merges.txt)
+10. Works with HuggingFace model directories containing tokenizer_config.json
+11. Memory usage is O(1) per row, not O(N) for N total rows
+12. Pre-constructed `Tokenizer` instance can be provided as an escape hatch

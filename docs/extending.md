@@ -63,41 +63,54 @@ private static float[] WeightedMeanPool(
 
 **File to modify:** `TextTokenizerEstimator.cs` — `LoadTokenizer()` method
 
-Currently only `vocab.txt` (BertTokenizer/WordPiece) is supported. To add BPE support:
+`LoadTokenizer()` uses smart resolution to handle directories, HuggingFace config files, and direct vocab files. It currently supports:
+
+| Source | Tokenizer | Vocab Files |
+|--------|-----------|-------------|
+| `tokenizer_class: "BertTokenizer"` | `BertTokenizer` | `vocab.txt` |
+| `tokenizer_class: "XLMRobertaTokenizer"` | `LlamaTokenizer` | `sentencepiece.bpe.model`, `tokenizer.model` |
+| `tokenizer_class: "LlamaTokenizer"` | `LlamaTokenizer` | `tokenizer.model` |
+| `tokenizer_class: "GPT2Tokenizer"` | `BpeTokenizer` | `vocab.json` + `merges.txt` |
+| `tokenizer_class: "RobertaTokenizer"` | `BpeTokenizer` | `vocab.json` + `merges.txt` |
+| Direct `.txt` file | `BertTokenizer` | (the file itself) |
+| Direct `.model` file | `LlamaTokenizer` | (the file itself) |
+
+### Adding a new tokenizer type
+
+To add support for a new `tokenizer_class` value (e.g., a future `MistralTokenizer`):
+
+1. Add a case to the `LoadFromConfig()` switch:
 
 ```csharp
-internal static Tokenizer LoadTokenizer(string path)
+"MistralTokenizer" => LoadSentencePieceFromDirectory(directory),
+```
+
+2. If the new tokenizer uses a completely different format, add a new `LoadXxxFromDirectory()` method:
+
+```csharp
+private static Tokenizer LoadCustomFromDirectory(string directory)
 {
-    var ext = Path.GetExtension(path).ToLowerInvariant();
-    var fileName = Path.GetFileName(path).ToLowerInvariant();
-
-    return (ext, fileName) switch
-    {
-        (".txt", _) => BertTokenizer.Create(File.OpenRead(path)),
-
-        // BPE tokenizer (GPT-2 style) — requires vocab.json + merges.txt
-        (".json", "vocab.json") => LoadBpeTokenizer(path),
-
-        _ => throw new NotSupportedException(
-            $"Unsupported tokenizer file: '{fileName}'. " +
-            $"Use vocab.txt for BERT/WordPiece or vocab.json for BPE.")
-    };
-}
-
-private static Tokenizer LoadBpeTokenizer(string vocabPath)
-{
-    var dir = Path.GetDirectoryName(vocabPath)!;
-    var mergesPath = Path.Combine(dir, "merges.txt");
-
-    using var vocabStream = File.OpenRead(vocabPath);
-    using var mergesStream = File.Exists(mergesPath)
-        ? File.OpenRead(mergesPath) : null;
-
-    return BpeTokenizer.Create(vocabStream, mergesStream);
+    var vocabPath = Path.Combine(directory, "custom_vocab.dat");
+    if (!File.Exists(vocabPath))
+        throw new FileNotFoundException(
+            $"Custom tokenizer requires custom_vocab.dat in '{directory}'.");
+    // Construct and return the tokenizer
 }
 ```
 
-**Also update `ModelPackager`:** When saving, you'd need to bundle both `vocab.json` and `merges.txt` for BPE models.
+3. For tokenizer types not supported by `Microsoft.ML.Tokenizers`, users can always inject a pre-constructed instance via `TextTokenizerOptions.Tokenizer`.
+
+### HuggingFace config resolution
+
+When `TokenizerPath` points to a directory or `tokenizer_config.json`, the loader:
+1. Reads `tokenizer_class` from the JSON (strips `"Fast"` suffix: `BertTokenizerFast` → `BertTokenizer`)
+2. Dispatches to the appropriate factory method
+3. Applies config properties (e.g., `do_lower_case` → `BertOptions.LowerCaseBeforeTokenization`)
+4. Finds sibling vocab files in the same directory
+
+This mirrors HuggingFace's `AutoTokenizer.from_pretrained()` pattern.
+
+**Also update `ModelPackager`:** When saving, ensure all required vocab files are bundled for the tokenizer type being used.
 
 ## Using Different ONNX Models
 
@@ -124,7 +137,8 @@ If tensor names differ from the convention, use the override options:
 var options = new OnnxTextEmbeddingOptions
 {
     ModelPath = "custom-model.onnx",
-    TokenizerPath = "vocab.txt",
+    TokenizerPath = "models/custom-model/",       // directory with tokenizer_config.json
+    // OR: TokenizerPath = "vocab.txt",            // direct file still works
     InputIdsName = "tokens",              // override
     AttentionMaskName = "mask",           // override
     OutputTensorName = "embeddings",      // override
@@ -158,7 +172,7 @@ var mlContext = new MLContext();
 // Step 1: Tokenize
 var tokenizer = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
 {
-    TokenizerPath = "vocab.txt",
+    TokenizerPath = "models/all-MiniLM-L6-v2/",  // directory — auto-detects from tokenizer_config.json
     InputColumnName = "Text",
     MaxTokenLength = 128
 }).Fit(dataView);

@@ -43,8 +43,8 @@ public sealed class OnnxTextEmbeddingEstimator : IEstimator<OnnxTextEmbeddingTra
 
         if (!File.Exists(options.ModelPath))
             throw new FileNotFoundException($"ONNX model not found: {options.ModelPath}");
-        if (!File.Exists(options.TokenizerPath))
-            throw new FileNotFoundException($"Tokenizer file not found: {options.TokenizerPath}");
+        if (!File.Exists(options.TokenizerPath) && !Directory.Exists(options.TokenizerPath))
+            throw new FileNotFoundException($"Tokenizer path not found: {options.TokenizerPath}");
     }
 
     public OnnxTextEmbeddingTransformer Fit(IDataView input)

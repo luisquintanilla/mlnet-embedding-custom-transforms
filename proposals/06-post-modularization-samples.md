@@ -30,7 +30,7 @@ using Microsoft.ML;
 using MLNet.Embeddings.Onnx;
 
 var modelPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "models", "model.onnx"));
-var vocabPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "models", "vocab.txt"));
+var tokenizerPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "models")); // directory — auto-detects from tokenizer_config.json or known vocab files
 
 Console.WriteLine("=== Composable Pooling Comparison ===\n");
 
@@ -49,7 +49,7 @@ var dataView = mlContext.Data.LoadFromEnumerable(sampleData);
 // Step 1: Tokenize (shared across all pooling strategies)
 var tokenizerEstimator = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
 {
-    TokenizerPath = vocabPath,
+    TokenizerPath = tokenizerPath,
     InputColumnName = "Text",
     MaxTokenLength = 128
 });
@@ -134,7 +134,7 @@ using Microsoft.ML;
 using MLNet.Embeddings.Onnx;
 
 var modelPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "models", "model.onnx"));
-var vocabPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "models", "vocab.txt"));
+var tokenizerPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "models")); // directory — auto-detects tokenizer
 
 Console.WriteLine("=== Intermediate Pipeline Inspection ===\n");
 
@@ -152,7 +152,7 @@ var dataView = mlContext.Data.LoadFromEnumerable(sampleData);
 Console.WriteLine("=== Step 1: Tokenization ===\n");
 var tokenizer = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
 {
-    TokenizerPath = vocabPath,
+    TokenizerPath = tokenizerPath,
     InputColumnName = "Text",
     MaxTokenLength = 32  // short for readability
 }).Fit(dataView);
@@ -268,7 +268,7 @@ using Microsoft.ML;
 using MLNet.Embeddings.Onnx;
 
 var modelPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "models", "model.onnx"));
-var vocabPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "models", "vocab.txt"));
+var tokenizerPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "models")); // directory — auto-detects tokenizer
 
 Console.WriteLine("=== Provider-Agnostic MEAI Embedding Transform ===\n");
 
@@ -283,7 +283,7 @@ var mlContext = new MLContext();
 var onnxOptions = new OnnxTextEmbeddingOptions
 {
     ModelPath = modelPath,
-    TokenizerPath = vocabPath,
+    TokenizerPath = tokenizerPath,
     MaxTokenLength = 128,
     Pooling = PoolingStrategy.MeanPooling,
     Normalize = true

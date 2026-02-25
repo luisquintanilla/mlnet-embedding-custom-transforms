@@ -8,7 +8,11 @@ public class OnnxTextEmbeddingOptions
     /// <summary>Path to the ONNX model file.</summary>
     public required string ModelPath { get; set; }
 
-    /// <summary>Path to the HuggingFace tokenizer.json file.</summary>
+    /// <summary>
+    /// Path to tokenizer artifacts. Can be a directory containing tokenizer_config.json,
+    /// a tokenizer_config.json file, or a direct vocab file (.txt, .model).
+    /// See <see cref="TextTokenizerOptions.TokenizerPath"/> for full resolution rules.
+    /// </summary>
     public required string TokenizerPath { get; set; }
 
     /// <summary>Name of the input text column in the IDataView. Default: "Text".</summary>

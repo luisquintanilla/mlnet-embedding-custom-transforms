@@ -52,7 +52,7 @@ build-test
 | `src/MLNet.Embeddings.Onnx/TextTokenizerTransformer.cs` | ~300 (includes TokenizerDataView + TokenizerCursor) |
 
 ### Code to Extract From
-- `OnnxTextEmbeddingEstimator.LoadTokenizer()` → `TextTokenizerEstimator.LoadTokenizer()`
+- `OnnxTextEmbeddingEstimator.LoadTokenizer()` → `TextTokenizerEstimator.LoadTokenizer()` (expanded with smart resolution: directory, config, vocab file)
 - `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 145-154 → `TextTokenizerTransformer.Tokenize()` (direct face) and `TokenizerCursor.MoveNext()`
 - `OnnxTextEmbeddingTransformer.ReadTextColumn()` → cursor-based per-row reading in `TokenizerCursor`
 

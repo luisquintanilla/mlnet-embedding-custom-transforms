@@ -157,15 +157,24 @@ void ICanSaveModel.Save(ModelSaveContext ctx)
 
 Users call `transformer.Save("path.mlnet")` instead of `mlContext.Model.Save(transformer, schema, "path")`. This is a minor API difference that would disappear if the transform moved into ML.NET.
 
-## Why BertTokenizer (Not BPE)
+## Tokenizer Loading: Smart Resolution via `TokenizerPath`
 
-The all-MiniLM-L6-v2 model (and most BERT-derived sentence-transformers) uses **WordPiece** tokenization, not BPE. The tokenizer vocabulary is distributed as `vocab.txt` — a simple newline-delimited file of tokens.
+The all-MiniLM-L6-v2 model (and most BERT-derived sentence-transformers) uses **WordPiece** tokenization, distributed as `vocab.txt`. Other models use SentencePiece (`.model`) or BPE (`vocab.json` + `merges.txt`).
 
 `Microsoft.ML.Tokenizers` v2.0.0 provides:
-- `BertTokenizer.Create(Stream vocabStream)` — for WordPiece/BERT models
+- `BertTokenizer.Create(Stream vocabStream, BertOptions?)` — for WordPiece/BERT models
+- `LlamaTokenizer.Create(Stream)` — for SentencePiece models (XLMRoberta, T5, etc.)
 - `BpeTokenizer.Create(Stream vocab, Stream? merges)` — for GPT-2/BPE models
 
-Our `LoadTokenizer()` currently supports `vocab.txt` files (BertTokenizer). Support for BPE tokenizers can be added by detecting the file format — see [extending.md](extending.md).
+Rather than requiring users to know which tokenizer type their model uses, `LoadTokenizer()` uses a **smart resolution** strategy via a single `TokenizerPath` property:
+
+1. **Directory with `tokenizer_config.json`** → reads the HuggingFace config's `tokenizer_class` field (e.g., `"BertTokenizer"`, `"XLMRobertaTokenizer"`, `"GPT2Tokenizer"`), maps it to the appropriate `Microsoft.ML.Tokenizers` class, and loads sibling vocab files. Also applies config options like `do_lower_case`.
+2. **Directory without config** → scans for known files (`vocab.txt` → BERT, `tokenizer.model` → SentencePiece).
+3. **`tokenizer_config.json` file** → same as (1), uses the file's parent directory for sibling resolution.
+4. **Direct vocab file** → infers type from extension (`.txt` → BERT, `.model` → SentencePiece).
+5. **Pre-constructed `Tokenizer` instance** → the `Tokenizer` property on `TextTokenizerOptions` bypasses all resolution. Use this for exotic formats or shared tokenizer instances.
+
+This design mirrors HuggingFace's `AutoTokenizer.from_pretrained(path)` pattern — one input, smart resolution — while keeping the API surface minimal (two properties: `Tokenizer` and `TokenizerPath`).
 
 ## Modularization: Why Decompose Into Three Transforms
 

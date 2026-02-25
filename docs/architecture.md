@@ -51,8 +51,9 @@ This document walks through every component in the solution and traces the data 
 │  │   TokenTypeIds     │     │                              │                 │
 │  │                    │     │ Wraps InferenceSession        │                 │
 │  │ Wraps              │     │ Auto-discovers tensor names   │                 │
-│  │ BertTokenizer      │     │ Handles batching              │                 │
-│  │ (extensible)       │     │ Task-agnostic                 │                 │
+│  │ BertTokenizer,     │     │ Handles batching              │                 │
+│  │ SentencePiece,     │     │ Task-agnostic                 │                 │
+│  │ BPE (auto-detect)  │                                                       │
 │  └────────────────────┘     └──────────────┬───────────────┘                 │
 │                                            │                                 │
 └────────────────────────────────────────────┼─────────────────────────────────┘
@@ -141,7 +142,7 @@ The facade estimator (`OnnxTextEmbeddingEstimator`) chains three sub-estimators:
 Fit(IDataView input)
   │
   ├─ 1. Create TextTokenizerEstimator → Fit → TextTokenizerTransformer
-  │     Loads BertTokenizer from vocab.txt
+  │     Loads tokenizer via smart resolution (directory/config/vocab file)
   │
   ├─ 2. Create OnnxTextModelScorerEstimator → Fit → OnnxTextModelScorerTransformer
   │     Creates InferenceSession, auto-discovers tensor metadata
@@ -171,8 +172,8 @@ The composite `OnnxTextEmbeddingTransformer` saves/loads as a single zip (same a
 ```
 embedding-model.mlnet (zip)
 ├── model.onnx
-├── vocab.txt
-├── config.json        ← includes all options
+├── vocab.txt              ← tokenizer vocabulary (format varies by model)
+├── config.json            ← includes all options
 └── manifest.json
 ```
 
