@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\MLNet.Embeddings.Onnx\MLNet.Embeddings.Onnx.csproj" />
+
   </ItemGroup>
 
   <PropertyGroup>

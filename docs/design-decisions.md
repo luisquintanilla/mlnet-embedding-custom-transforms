@@ -119,6 +119,71 @@ This mirrors how ML.NET's own `OnnxTransformer` works internally — it creates 
 
 **Manual override:** Every auto-discovered value can be overridden via `OnnxTextEmbeddingOptions` for non-standard models.
 
+## GPU Execution Provider Design
+
+ONNX inference is the computational bottleneck of the embedding pipeline. Transformer models see 5-20× speedups on GPU. The GPU support design involved several deliberate trade-offs.
+
+### Why `OnnxRuntime.Managed` (No Native Binaries)
+
+The library references `Microsoft.ML.OnnxRuntime.Managed` — the managed API surface only, with zero native binaries. The consuming application decides the execution provider:
+
+| User's Package | Effect |
+|---------------|--------|
+| `Microsoft.ML.OnnxRuntime` | CPU native libs (default) |
+| `Microsoft.ML.OnnxRuntime.Gpu` | CUDA native libs |
+
+Both packages pull in `Managed` transitively, so the managed API (`InferenceSession`, `SessionOptions`, `OrtValue`) is always available regardless of which the user chooses.
+
+**Why not keep `Microsoft.ML.OnnxRuntime` (the CPU package)?** If the library ships with the CPU native package, users who want GPU must deal with conflicting native binaries — the CPU package's native libs vs the GPU package's. By shipping managed-only, there's no conflict. This mirrors how ML.NET's own `Microsoft.ML.OnnxTransformer` package works.
+
+**Trade-off:** Sample projects (and any consumer) must now explicitly reference a native runtime package. We added `Microsoft.ML.OnnxRuntime` to all sample `.csproj` files to maintain the zero-friction experience for CPU users.
+
+### GPU Device Resolution Order
+
+```
+Per-estimator options.GpuDeviceId  →  MLContext.GpuDeviceId  →  null (CPU)
+```
+
+This follows ML.NET's established convention from [`OnnxCatalog.ApplyOnnxModel`](https://github.com/dotnet/machinelearning/blob/70d76033/src/Microsoft.ML.OnnxTransformer/OnnxCatalog.cs). The per-estimator override exists because a user might run tokenization on CPU and scoring on GPU, or target different GPU devices for different models. `MLContext.GpuDeviceId` provides a convenient "set once, apply everywhere" default.
+
+### Why `FallbackToCpu` Defaults to `false`
+
+Fail-fast is the right default for GPU configuration. If a user explicitly requests GPU and CUDA isn't available, they should know immediately (via an exception) rather than silently running 10× slower on CPU. Users who want graceful degradation opt in explicitly with `FallbackToCpu = true`.
+
+When fallback is enabled, the `CreateSessionOptions()` helper catches CUDA initialization failures and returns a CPU-only `SessionOptions`:
+
+```csharp
+try { options.AppendExecutionProvider_CUDA(deviceId.Value); }
+catch (Exception) when (fallbackToCpu) { /* silent CPU fallback */ }
+```
+
+### Why GPU Settings Are Not Serialized
+
+`GpuDeviceId` and `FallbackToCpu` are runtime concerns, not model artifacts. A model saved on a GPU machine must load on a CPU-only machine without error. The `ModelPackager` serializes `OnnxTextEmbeddingOptions` to `config.json` inside the zip, but GPU settings are excluded from this serialization — they're set at runtime when the model is loaded and used.
+
+### Why No Changes to Data Flow / Cursor Code
+
+`OnnxTextModelScorerTransformer.RunOnnxBatch()` uses `OrtValue.CreateTensorValueFromMemory()` which works with CPU memory. When a GPU execution provider is active, ORT automatically copies input tensors to GPU memory before execution and copies output tensors back to CPU memory after. This is transparent — no code changes needed.
+
+**Deferred optimization:** [IO Binding](https://onnxruntime.ai/docs/api/python/io_binding.html) would pre-allocate GPU buffers to eliminate per-call CPU↔GPU copies. This is a valid optimization for high-throughput scenarios but requires a larger refactor of `RunOnnxBatch()` and is out of scope for the initial GPU support.
+
+### The `GetMLContext()` Reflection Workaround
+
+The extension methods on `TransformsCatalog` (e.g., `mlContext.Transforms.ScoreOnnxTextModel(...)`) need to pass the user's `MLContext` to estimator constructors so that `MLContext.GpuDeviceId` is preserved. However, `TransformsCatalog` doesn't publicly expose the `MLContext` that created it.
+
+We use reflection to extract it:
+
+```csharp
+var envProperty = typeof(TransformsCatalog)
+    .GetProperty("Environment", BindingFlags.NonPublic | BindingFlags.Instance);
+if (envProperty?.GetValue(catalog) is MLContext mlContext)
+    return mlContext;
+```
+
+This is fragile (relies on an internal property name) but necessary for external code. It pairs with the `SchemaShape.Column` reflection workaround described below — both are friction points that disappear with Approach D.
+
+**Approach D migration path:** Inside the ML.NET repo, this reflection is replaced by `CatalogUtils.GetEnvironment(catalog)` (an internal helper) and casting to `IHostEnvironmentInternal` for `GpuDeviceId` / `FallbackToCpu`. The rest of the GPU plumbing (`CreateSessionOptions`, options classes, resolution order) transfers directly.
+
 ## Thread Safety
 
 **`InferenceSession`:** OnnxRuntime's documentation states that `Run()` is thread-safe for concurrent calls. The session handles internal locking. We use a single session per transformer instance.
@@ -141,7 +206,7 @@ var outputCol = (SchemaShape.Column)colCtor.Invoke([
 ]);
 ```
 
-This is a known friction point for external ML.NET transform authors. It works reliably because the constructor signature has been stable across ML.NET versions, but it's another reason to eventually move to Approach D inside the ML.NET repo.
+This is a known friction point for external ML.NET transform authors. It works reliably because the constructor signature has been stable across ML.NET versions, but it's another reason to eventually move to Approach D inside the ML.NET repo. (See also the `GetMLContext()` reflection workaround in the GPU section above — both are reflection hacks that disappear with internal access.)
 
 ## The ICanSaveModel Requirement
 

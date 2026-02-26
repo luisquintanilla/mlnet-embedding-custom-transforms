@@ -1,6 +1,5 @@
 using Microsoft.ML;
 using Microsoft.ML.Data;
-using Microsoft.ML.OnnxRuntime;
 
 namespace MLNet.Embeddings.Onnx;
 
@@ -53,6 +52,8 @@ public sealed class OnnxTextEmbeddingEstimator : IEstimator<OnnxTextEmbeddingTra
             AttentionMaskTensorName = _options.AttentionMaskName,
             TokenTypeIdsTensorName = _options.TokenTypeIdsName,
             OutputTensorName = _options.OutputTensorName,
+            GpuDeviceId = _options.GpuDeviceId,
+            FallbackToCpu = _options.FallbackToCpu,
         };
         var scorerEstimator = new OnnxTextModelScorerEstimator(_mlContext, scorerOptions);
         var scorerTransformer = scorerEstimator.Fit(tokenizedData);
@@ -90,19 +91,18 @@ public sealed class OnnxTextEmbeddingEstimator : IEstimator<OnnxTextEmbeddingTra
 
         // Probe the model to get embedding dimension
         int embeddingDim;
-        using (var session = new InferenceSession(_options.ModelPath))
+        var scorerEstimator = new OnnxTextModelScorerEstimator(_mlContext, new OnnxTextModelScorerOptions
         {
-            var scorerEstimator = new OnnxTextModelScorerEstimator(_mlContext, new OnnxTextModelScorerOptions
-            {
-                ModelPath = _options.ModelPath,
-                InputIdsTensorName = _options.InputIdsName,
-                AttentionMaskTensorName = _options.AttentionMaskName,
-                TokenTypeIdsTensorName = _options.TokenTypeIdsName,
-                OutputTensorName = _options.OutputTensorName,
-            });
-            var metadata = scorerEstimator.DiscoverModelMetadata(session);
-            embeddingDim = metadata.HiddenDim;
-        }
+            ModelPath = _options.ModelPath,
+            InputIdsTensorName = _options.InputIdsName,
+            AttentionMaskTensorName = _options.AttentionMaskName,
+            TokenTypeIdsTensorName = _options.TokenTypeIdsName,
+            OutputTensorName = _options.OutputTensorName,
+            GpuDeviceId = _options.GpuDeviceId,
+            FallbackToCpu = _options.FallbackToCpu,
+        });
+        var metadata = scorerEstimator.DiscoverModelMetadata();
+        embeddingDim = metadata.HiddenDim;
 
         var result = inputSchema.ToDictionary(x => x.Name);
         var colCtor = typeof(SchemaShape.Column).GetConstructors(

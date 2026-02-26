@@ -46,4 +46,17 @@ public class OnnxTextEmbeddingOptions
 
     /// <summary>ONNX output tensor name for embeddings. Null = auto-detect (prefers "sentence_embedding", falls back to "last_hidden_state").</summary>
     public string? OutputTensorName { get; set; }
+
+    /// <summary>
+    /// Optional GPU device ID to run execution on. Null = use MLContext.GpuDeviceId.
+    /// Set to a non-negative integer (e.g. 0) to target a specific CUDA device.
+    /// Requires the consuming application to reference Microsoft.ML.OnnxRuntime.Gpu.
+    /// </summary>
+    public int? GpuDeviceId { get; set; }
+
+    /// <summary>
+    /// If true and GPU initialization fails, fall back to CPU instead of throwing.
+    /// Default: false.
+    /// </summary>
+    public bool FallbackToCpu { get; set; }
 }

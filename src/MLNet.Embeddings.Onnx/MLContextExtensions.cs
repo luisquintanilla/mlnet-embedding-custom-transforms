@@ -60,12 +60,18 @@ public static class MLContextExtensions
         return new EmbeddingPoolingEstimator(catalog.GetMLContext(), options);
     }
 
-    // Helper to get MLContext from TransformsCatalog via reflection (it's not directly exposed)
+    // Gets the real MLContext from TransformsCatalog via reflection so that
+    // context-level settings (e.g. GpuDeviceId) are preserved.
     private static MLContext GetMLContext(this TransformsCatalog catalog)
     {
-        // TransformsCatalog stores the MLContext internally — use the environment
-        // Since there's no public accessor, we create a new one with the same seed
-        // In a production implementation, this would be passed through properly
+        var envProperty = typeof(TransformsCatalog)
+            .GetProperty("Environment", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+        // In ML.NET 5.0+, MLContext implements IHostEnvironment directly
+        if (envProperty?.GetValue(catalog) is MLContext mlContext)
+            return mlContext;
+
+        // Fallback: return new MLContext (loses GpuDeviceId, but doesn't crash)
         return new MLContext();
     }
 }

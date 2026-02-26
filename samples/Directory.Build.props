@@ -1,0 +1,22 @@
+<Project>
+
+  <!--
+    GPU auto-detection for sample projects.
+    If CUDA_PATH is set (CUDA Toolkit installed), uses Microsoft.ML.OnnxRuntime.Gpu.
+    Otherwise falls back to CPU-only Microsoft.ML.OnnxRuntime.
+
+    Override: dotnet build -p:UseGpuRuntime=true   (force GPU)
+              dotnet build -p:UseGpuRuntime=false  (force CPU)
+  -->
+  <PropertyGroup>
+    <UseGpuRuntime Condition="'$(UseGpuRuntime)' == '' AND '$(CUDA_PATH)' != ''">true</UseGpuRuntime>
+    <UseGpuRuntime Condition="'$(UseGpuRuntime)' == ''">false</UseGpuRuntime>
+    <OnnxRuntimePackage Condition="'$(UseGpuRuntime)' == 'true'">Microsoft.ML.OnnxRuntime.Gpu</OnnxRuntimePackage>
+    <OnnxRuntimePackage Condition="'$(UseGpuRuntime)' != 'true'">Microsoft.ML.OnnxRuntime</OnnxRuntimePackage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="$(OnnxRuntimePackage)" Version="1.24.2" />
+  </ItemGroup>
+
+</Project>

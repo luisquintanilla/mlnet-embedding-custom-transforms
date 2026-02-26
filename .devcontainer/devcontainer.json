@@ -1,6 +1,15 @@
 {
     "name": "MLNet.Embeddings.Onnx",
     "image": "mcr.microsoft.com/devcontainers/dotnet:10.0",
+    "hostRequirements": {
+        "gpu": "optional"
+    },
+    "features": {
+        "ghcr.io/devcontainers/features/nvidia-cuda:1": {
+            "cudaVersion": "12.6",
+            "installCudnn": true
+        }
+    },
     "postCreateCommand": "bash .devcontainer/post-create.sh",
     "customizations": {
         "vscode": {

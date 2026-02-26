@@ -192,12 +192,89 @@ Any sentence-transformer ONNX model that follows the standard input/output conve
 
 Models with `sentence_embedding` output (pre-pooled) are auto-detected and pooling is skipped.
 
+## GPU Support (CUDA)
+
+The library supports GPU-accelerated ONNX inference via CUDA. The library itself ships with no native binaries — you control the execution provider by choosing your OnnxRuntime package.
+
+### GPU Prerequisites
+
+GPU inference requires the [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) and [cuDNN](https://developer.nvidia.com/cudnn) installed on the host machine, plus an NVIDIA GPU with a compatible driver.
+
+**Windows (winget + direct download):**
+
+```powershell
+# 1. Install CUDA Toolkit 12.6
+winget install Nvidia.CUDA --version 12.6 --source winget
+
+# 2. Download and install cuDNN 9.x for CUDA 12
+#    Download the zip from NVIDIA's redistributable endpoint:
+$url = "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.8.0.87_cuda12-archive.zip"
+Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\cudnn.zip"
+Expand-Archive "$env:TEMP\cudnn.zip" -DestinationPath "$env:TEMP\cudnn"
+
+# 3. Copy cuDNN DLLs to CUDA bin (requires admin)
+Copy-Item "$env:TEMP\cudnn\cudnn-*\bin\*.dll" "$env:CUDA_PATH\bin" -Force
+```
+
+**Linux (apt):**
+
+```bash
+# CUDA Toolkit
+sudo apt-get install -y nvidia-cuda-toolkit
+
+# cuDNN (via NVIDIA's apt repository)
+# See: https://docs.nvidia.com/deeplearning/cudnn/installation/linux.html
+```
+
+**Verify installation:**
+
+```powershell
+nvidia-smi                    # Should show GPU + driver version
+nvcc --version                # Should show CUDA 12.x
+```
+
+### Package Setup
+
+Replace `Microsoft.ML.OnnxRuntime` with `Microsoft.ML.OnnxRuntime.Gpu` in your application:
+
+```xml
+<PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.2" />
+```
+
+> **Samples auto-detect GPU:** The sample projects use a `Directory.Build.props` that checks for `CUDA_PATH` (set by the CUDA Toolkit installer) and automatically switches to `Microsoft.ML.OnnxRuntime.Gpu`. Override with `dotnet build -p:UseGpuRuntime=true` or `dotnet build -p:UseGpuRuntime=false`.
+
+### Usage
+
+```csharp
+// Pattern 1: Context-level (applies to all ONNX estimators)
+var mlContext = new MLContext();
+mlContext.GpuDeviceId = 0; // Use first CUDA device
+
+var estimator = new OnnxTextEmbeddingEstimator(mlContext, new OnnxTextEmbeddingOptions
+{
+    ModelPath = "models/model.onnx",
+    TokenizerPath = "models/",
+});
+
+// Pattern 2: Per-estimator override
+var scorerOptions = new OnnxTextModelScorerOptions
+{
+    ModelPath = "models/model.onnx",
+    GpuDeviceId = 0,       // Override for this estimator only
+    FallbackToCpu = true,  // Graceful degradation if CUDA unavailable
+};
+```
+
+**Resolution order:** Per-estimator `GpuDeviceId` → `MLContext.GpuDeviceId` → `null` (CPU).
+
+When `FallbackToCpu = true`, if CUDA initialization fails the estimator silently falls back to CPU execution.
+
 ## NuGet Dependencies
 
 | Package | Version | Purpose |
 |---------|---------|---------|
 | `Microsoft.ML` | 5.0.0 | IEstimator/ITransformer, IDataView, MLContext |
-| `Microsoft.ML.OnnxRuntime` | 1.24.2 | InferenceSession, OrtValue |
+| `Microsoft.ML.OnnxRuntime.Managed` | 1.24.2 | InferenceSession, OrtValue (managed API; bring your own native runtime) |
 | `Microsoft.ML.Tokenizers` | 2.0.0 | BertTokenizer (WordPiece), BPE, SentencePiece |
 | `Microsoft.Extensions.AI.Abstractions` | 10.3.0 | IEmbeddingGenerator |
 | `System.Numerics.Tensors` | 10.0.3 | Tensor\<T\>, TensorPrimitives |

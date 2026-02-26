@@ -52,6 +52,19 @@ public class OnnxTextModelScorerOptions
     /// falls back to "last_hidden_state" / "output" (unpooled).
     /// </summary>
     public string? OutputTensorName { get; set; }
+
+    /// <summary>
+    /// Optional GPU device ID to run execution on. Null = use MLContext.GpuDeviceId.
+    /// Set to a non-negative integer (e.g. 0) to target a specific CUDA device.
+    /// Requires the consuming application to reference Microsoft.ML.OnnxRuntime.Gpu.
+    /// </summary>
+    public int? GpuDeviceId { get; set; }
+
+    /// <summary>
+    /// If true and GPU initialization fails, fall back to CPU instead of throwing.
+    /// Default: false.
+    /// </summary>
+    public bool FallbackToCpu { get; set; }
 }
 
 /// <summary>
@@ -91,7 +104,7 @@ public sealed class OnnxTextModelScorerEstimator : IEstimator<OnnxTextModelScore
         if (_options.TokenTypeIdsColumnName != null)
             ValidateColumn(input.Schema, _options.TokenTypeIdsColumnName);
 
-        var session = new InferenceSession(_options.ModelPath);
+        var session = CreateInferenceSession();
         var metadata = DiscoverModelMetadata(session);
 
         return new OnnxTextModelScorerTransformer(_mlContext, _options, session, metadata);
@@ -168,6 +181,64 @@ public sealed class OnnxTextModelScorerEstimator : IEstimator<OnnxTextModelScore
         return new OnnxModelMetadata(
             inputIdsName, attentionMaskName, tokenTypeIdsName,
             outputName, hiddenDim, hasPooledOutput, outputRank);
+    }
+
+    /// <summary>
+    /// Overload that creates a temporary session using the configured SessionOptions
+    /// to discover model metadata. Used by GetOutputSchema() scenarios.
+    /// </summary>
+    internal OnnxModelMetadata DiscoverModelMetadata()
+    {
+        using var session = CreateInferenceSession();
+        return DiscoverModelMetadata(session);
+    }
+
+    /// <summary>
+    /// Creates an InferenceSession with GPU support if configured.
+    /// If FallbackToCpu is true, catches CUDA failures and retries with CPU-only options.
+    /// </summary>
+    private InferenceSession CreateInferenceSession()
+    {
+        var (sessionOptions, fallbackToCpu) = CreateSessionOptions();
+
+        try
+        {
+            return new InferenceSession(_options.ModelPath, sessionOptions);
+        }
+        catch (OnnxRuntimeException) when (fallbackToCpu)
+        {
+            // CUDA initialization failed (invalid device, driver mismatch, etc.)
+            // Fall back to CPU-only session.
+            return new InferenceSession(_options.ModelPath, new SessionOptions());
+        }
+    }
+
+    private (SessionOptions options, bool fallbackToCpu) CreateSessionOptions()
+    {
+        // Resolve GPU device: per-estimator option → MLContext.GpuDeviceId → null (CPU)
+        int? deviceId = _options.GpuDeviceId ?? _mlContext.GpuDeviceId;
+        bool fallbackToCpu = _options.FallbackToCpu;
+
+        // If MLContext provides FallbackToCpu and no per-estimator override was set,
+        // inherit the context-level setting.
+        if (_options.GpuDeviceId == null && _mlContext.GpuDeviceId != null)
+            fallbackToCpu = _mlContext.FallbackToCpu;
+
+        var options = new SessionOptions();
+
+        if (deviceId.HasValue)
+        {
+            try
+            {
+                options.AppendExecutionProvider_CUDA(deviceId.Value);
+            }
+            catch (Exception) when (fallbackToCpu)
+            {
+                // CUDA libraries not available — fall back to CPU
+            }
+        }
+
+        return (options, fallbackToCpu);
     }
 
     private static string FindTensorName(

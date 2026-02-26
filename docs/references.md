@@ -34,8 +34,8 @@ A curated list of all sources used in the design and implementation of this proj
 - **OnnxRuntime C# API Reference** — `InferenceSession`, `OrtValue`, `SessionOptions`, and related types.
   - https://onnxruntime.ai/docs/api/csharp-api.html
 
-- **OnnxRuntime NuGet Package** — `Microsoft.ML.OnnxRuntime` (v1.24.2 used in this project).
-  - https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime
+- **OnnxRuntime NuGet Package** — `Microsoft.ML.OnnxRuntime.Managed` (v1.24.2 used in this project). Contains the managed API surface only; consuming applications bring their own native runtime (`Microsoft.ML.OnnxRuntime` for CPU, `Microsoft.ML.OnnxRuntime.Gpu` for CUDA).
+  - https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime.Managed
 
 ## Tokenization
 

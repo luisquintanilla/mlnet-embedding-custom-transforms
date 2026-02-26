@@ -317,17 +317,31 @@ This would give full `mlContext.Model.Save()` / `mlContext.Model.Load()` support
 
 ### GPU Support
 
-OnnxRuntime supports GPU execution via CUDA or DirectML. Add GPU options:
+GPU (CUDA) inference is now supported. The library references `Microsoft.ML.OnnxRuntime.Managed` (managed API only, no native binaries). Consuming applications choose their execution provider by referencing the appropriate native package (`Microsoft.ML.OnnxRuntime` for CPU, `Microsoft.ML.OnnxRuntime.Gpu` for CUDA).
+
+Both `OnnxTextModelScorerOptions` and `OnnxTextEmbeddingOptions` expose `GpuDeviceId` and `FallbackToCpu` properties. The resolution order follows ML.NET convention:
+
+1. Per-estimator `options.GpuDeviceId` (explicit override)
+2. `mlContext.GpuDeviceId` (context-level default)
+3. `null` = CPU
 
 ```csharp
-var sessionOptions = new SessionOptions();
-if (options.GpuDeviceId.HasValue)
+// Context-level GPU
+mlContext.GpuDeviceId = 0;
+
+// Or per-estimator override with graceful fallback
+var scorerOptions = new OnnxTextModelScorerOptions
 {
-    sessionOptions.AppendExecutionProvider_CUDA(options.GpuDeviceId.Value);
-    // OR: sessionOptions.AppendExecutionProvider_DML(options.GpuDeviceId.Value);
-}
-var session = new InferenceSession(options.ModelPath, sessionOptions);
+    ModelPath = "model.onnx",
+    GpuDeviceId = 0,
+    FallbackToCpu = true,
+};
 ```
+
+**Future extensions** not yet implemented:
+- **DirectML support** — `sessionOptions.AppendExecutionProvider_DML(deviceId)`
+- **Multiple EP fallback chains** (e.g., TensorRT → CUDA → CPU)
+- **Raw `SessionOptions` escape hatch** — exposing a user-supplied `SessionOptions` for advanced config (thread pools, memory arenas, IO Binding)
 
 ### Session Pooling
 

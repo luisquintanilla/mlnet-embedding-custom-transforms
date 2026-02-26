@@ -34,6 +34,20 @@ done
 echo ""
 echo "Ready! Run the basic sample with:"
 echo "  cd samples/BasicUsage && dotnet run"
+
+# Report GPU status
+if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+    echo ""
+    echo "==> GPU detected: $GPU_NAME"
+    echo "    Samples will auto-use Microsoft.ML.OnnxRuntime.Gpu via Directory.Build.props."
+    echo "    To force CPU: dotnet run -p:UseGpuRuntime=false"
+else
+    echo ""
+    echo "==> No GPU detected. Samples will use CPU inference."
+    echo "    To force GPU (if available): dotnet run -p:UseGpuRuntime=true"
+fi
+
 echo ""
 echo "Modular pipeline samples (use same model, already set up):"
 echo "  cd samples/ComposablePoolingComparison && dotnet run"
