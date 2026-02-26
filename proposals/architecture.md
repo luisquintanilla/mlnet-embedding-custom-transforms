@@ -8,7 +8,7 @@
 │                                                                              │
 │  // Composable pipeline (new):                                               │
 │  var pipeline = mlContext.Transforms.TokenizeText(tokenizerOpts)             │
-│      .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))            │
+│      .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))            │
 │      .Append(mlContext.Transforms.PoolEmbedding(poolingOpts));               │
 │                                                                              │
 │  // Convenience API (unchanged):                                             │
@@ -40,7 +40,7 @@
 │             Reusable Foundation (any transformer ONNX model)                  │
 │                                                                              │
 │  ┌────────────────────┐     ┌──────────────────────────────┐                 │
-│  │ TextTokenizer-     │     │ OnnxTextModelScorer-         │                 │
+│  │ TextTokenizer-     │     │ OnnxTextEmbeddingScorer-         │                 │
 │  │ Transformer        │     │ Transformer                  │                 │
 │  │                    │     │                              │                 │
 │  │ Text →             │     │ TokenIds + AttentionMask +   │                 │
@@ -83,7 +83,7 @@ TextTokenizerTransformer:
   │ AttentionMask (VBuffer<long>)       ← NEW: 1=real token, 0=padding
   │ TokenTypeIds (VBuffer<long>)        ← NEW: zeros (or segment IDs for text pairs)
   ▼
-OnnxTextModelScorerTransformer:
+OnnxTextEmbeddingScorerTransformer:
   │ Text (string)                       ← passed through
   │ TokenIds (VBuffer<long>)            ← passed through
   │ AttentionMask (VBuffer<long>)       ← passed through

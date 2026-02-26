@@ -41,13 +41,13 @@ public static class MLContextExtensions
     }
 
     /// <summary>
-    /// Creates an ONNX text model scorer transform for transformer-based models.
+    /// Creates an ONNX text embedding scorer transform for transformer-based models.
     /// </summary>
-    public static OnnxTextModelScorerEstimator ScoreOnnxTextModel(
+    public static OnnxTextEmbeddingScorerEstimator ScoreOnnxTextEmbedding(
         this TransformsCatalog catalog,
-        OnnxTextModelScorerOptions options)
+        OnnxTextEmbeddingScorerOptions options)
     {
-        return new OnnxTextModelScorerEstimator(catalog.GetMLContext(), options);
+        return new OnnxTextEmbeddingScorerEstimator(catalog.GetMLContext(), options);
     }
 
     /// <summary>

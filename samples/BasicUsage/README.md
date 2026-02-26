@@ -18,7 +18,7 @@ End-to-end demo of the **all-MiniLM-L6-v2** embedding model using all API surfac
 2. **Cosine Similarity** — Pairwise similarity between embedded texts using `TensorPrimitives.CosineSimilarity`
 3. **Save/Load Round-Trip** — Serialize to `.mlnet` zip, reload, and verify identical embeddings
 4. **MEAI `IEmbeddingGenerator`** — Use the model through Microsoft.Extensions.AI's provider-agnostic interface
-5. **Composable Pipeline (step-by-step)** — Explicit `TokenizeText → ScoreOnnxTextModel → PoolEmbedding` with individual transform inspection
+5. **Composable Pipeline (step-by-step)** — Explicit `TokenizeText → ScoreOnnxTextEmbedding → PoolEmbedding` with individual transform inspection
 6. **Chained Estimator Pipeline (`.Append`)** — Idiomatic ML.NET pattern chaining estimators, then `Fit + Transform` the whole pipeline at once
 
 ## Download Model Files
@@ -54,7 +54,7 @@ dotnet run
 ```csharp
 // Each step is a separate, inspectable transform
 var tokenizer = mlContext.Transforms.TokenizeText(tokenizerOpts).Fit(dataView);
-var scorer = mlContext.Transforms.ScoreOnnxTextModel(scorerOpts).Fit(tokenized);
+var scorer = mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts).Fit(tokenized);
 var pooler = mlContext.Transforms.PoolEmbedding(poolingOpts).Fit(scored);
 
 // Inspect intermediate state
@@ -65,7 +65,7 @@ Console.WriteLine($"Hidden dim: {scorer.HiddenDim}");
 
 ```csharp
 var pipeline = mlContext.Transforms.TokenizeText(tokenizerOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.PoolEmbedding(poolingOpts));
 var model = pipeline.Fit(dataView);
 ```

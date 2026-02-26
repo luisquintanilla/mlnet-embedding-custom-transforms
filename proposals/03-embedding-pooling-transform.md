@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Applies pooling and normalization to raw model output to produce a fixed-length embedding vector. This is the **task-specific post-processing step** for embedding generation. It is one of potentially many post-processing transforms that can sit downstream of `OnnxTextModelScorerTransformer`.
+Applies pooling and normalization to raw model output to produce a fixed-length embedding vector. This is the **task-specific post-processing step** for embedding generation. It is one of potentially many post-processing transforms that can sit downstream of `OnnxTextEmbeddingScorerTransformer`.
 
 ## Why a Separate Transform?
 
@@ -114,14 +114,14 @@ public sealed class EmbeddingPoolingEstimator : IEstimator<EmbeddingPoolingTrans
     internal EmbeddingPoolingEstimator(
         MLContext mlContext,
         EmbeddingPoolingOptions options,
-        OnnxTextModelScorerTransformer scorer)
+        OnnxTextEmbeddingScorerTransformer scorer)
         : this(mlContext, ConfigureFromScorer(options, scorer))
     {
     }
 
     private static EmbeddingPoolingOptions ConfigureFromScorer(
         EmbeddingPoolingOptions options,
-        OnnxTextModelScorerTransformer scorer)
+        OnnxTextEmbeddingScorerTransformer scorer)
     {
         // Auto-fill dimensions from scorer metadata
         options.HiddenDim = scorer.HiddenDim;
@@ -535,7 +535,7 @@ All share the same lazy cursor pattern: wrap upstream IDataView, compute per-row
 ## Acceptance Criteria
 
 1. `EmbeddingPoolingEstimator` validates HiddenDim and SequenceLength
-2. Auto-configures from `OnnxTextModelScorerTransformer` metadata when used via facade
+2. Auto-configures from `OnnxTextEmbeddingScorerTransformer` metadata when used via facade
 3. `Fit()` validates that input and attention mask columns exist
 4. `Transform()` returns a wrapping IDataView (no materialization)
 5. Cursor computes pooling per-row on demand (mean, CLS, or max)

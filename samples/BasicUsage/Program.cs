@@ -1,4 +1,4 @@
-﻿using System.Numerics.Tensors;
+using System.Numerics.Tensors;
 using Microsoft.Extensions.AI;
 using Microsoft.ML;
 using MLNet.Embeddings.Onnx;
@@ -140,7 +140,7 @@ var tokenizerEstimator = mlContext.Transforms.TokenizeText(new TextTokenizerOpti
 var tokenizerTransformer = tokenizerEstimator.Fit(dataView);
 var tokenizedData = tokenizerTransformer.Transform(dataView);
 
-var scorerEstimator = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+var scorerEstimator = mlContext.Transforms.ScoreOnnxTextEmbedding(new OnnxTextEmbeddingScorerOptions
 {
     ModelPath = modelPath,
     MaxTokenLength = 128,
@@ -193,7 +193,7 @@ var chainedPipeline = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
         InputColumnName = "Text",
         MaxTokenLength = 128
     })
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(new OnnxTextEmbeddingScorerOptions
     {
         ModelPath = modelPath,
         MaxTokenLength = 128,

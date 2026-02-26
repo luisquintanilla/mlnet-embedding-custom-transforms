@@ -21,7 +21,7 @@ var sampleData = new[]
 
 var dataView = mlContext.Data.LoadFromEnumerable(sampleData);
 
-// --- 1. Composable Pipeline: TokenizeText → ScoreOnnxTextModel → PoolEmbedding ---
+// --- 1. Composable Pipeline: TokenizeText → ScoreOnnxTextEmbedding → PoolEmbedding ---
 Console.WriteLine("1. Composable Modular Pipeline");
 Console.WriteLine(new string('-', 40));
 
@@ -35,7 +35,7 @@ var tokenizer = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
 var tokenized = tokenizer.Transform(dataView);
 
 // Step 2: Score with ONNX
-var scorer = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+var scorer = mlContext.Transforms.ScoreOnnxTextEmbedding(new OnnxTextEmbeddingScorerOptions
 {
     ModelPath = modelPath,
     MaxTokenLength = 128,
@@ -120,7 +120,7 @@ var chainedPipeline = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
         InputColumnName = "Text",
         MaxTokenLength = 128
     })
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(new OnnxTextEmbeddingScorerOptions
     {
         ModelPath = modelPath,
         MaxTokenLength = 128,

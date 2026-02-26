@@ -61,7 +61,7 @@ using (var cursor = tokenized.GetRowCursor(tokenized.Schema))
 
 // === Step 2: ONNX Scoring ===
 Console.WriteLine("=== Step 2: ONNX Scoring ===\n");
-var scorer = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+var scorer = mlContext.Transforms.ScoreOnnxTextEmbedding(new OnnxTextEmbeddingScorerOptions
 {
     ModelPath = modelPath,
     MaxTokenLength = 32,

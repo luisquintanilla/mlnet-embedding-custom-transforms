@@ -8,17 +8,17 @@ Users can build custom pipelines by mixing and matching transforms:
 ```csharp
 // Standard embedding pipeline
 var pipeline = mlContext.Transforms.TokenizeText(tokOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.PoolEmbedding(poolOpts));
 
 // Same tokenizer + scorer, different pooling
 var clsPipeline = mlContext.Transforms.TokenizeText(tokOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.PoolEmbedding(clsPoolOpts));
 
 // Same tokenizer + scorer, but for classification (future)
 var classifyPipeline = mlContext.Transforms.TokenizeText(tokOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.SoftmaxClassify(classifyOpts));
 ```
 
@@ -107,7 +107,7 @@ Three options classes means three places where column names must agree:
 ```csharp
 // If these don't match, you get a runtime error:
 var tokOpts = new TextTokenizerOptions { TokenIdsColumnName = "TokenIds" };
-var scorerOpts = new OnnxTextModelScorerOptions { TokenIdsColumnName = "InputIds" }; // ← mismatch!
+var scorerOpts = new OnnxTextEmbeddingScorerOptions { TokenIdsColumnName = "InputIds" }; // ← mismatch!
 ```
 
 **Mitigation:** Default column names are consistent across all three transforms (`"TokenIds"`, `"AttentionMask"`, `"TokenTypeIds"`, `"RawOutput"`, `"Embedding"`). Mismatches only occur if the user explicitly overrides names inconsistently. The facade eliminates this entirely by wiring up column names internally.

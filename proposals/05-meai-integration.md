@@ -270,11 +270,11 @@ public static class MLContextExtensions
         return new TextTokenizerEstimator(catalog.GetMLContext(), options);
     }
 
-    public static OnnxTextModelScorerEstimator ScoreOnnxTextModel(
+    public static OnnxTextEmbeddingScorerEstimator ScoreOnnxTextEmbedding(
         this TransformsCatalog catalog,
-        OnnxTextModelScorerOptions options)
+        OnnxTextEmbeddingScorerOptions options)
     {
-        return new OnnxTextModelScorerEstimator(catalog.GetMLContext(), options);
+        return new OnnxTextEmbeddingScorerEstimator(catalog.GetMLContext(), options);
     }
 
     public static EmbeddingPoolingEstimator PoolEmbedding(

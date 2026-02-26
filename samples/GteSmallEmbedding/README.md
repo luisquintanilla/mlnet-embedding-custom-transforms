@@ -14,7 +14,7 @@ Demonstrates [thenlper/gte-small](https://huggingface.co/thenlper/gte-small) wit
 
 ## What This Sample Shows
 
-1. **Composable Modular Pipeline** — Explicit `TokenizeText → ScoreOnnxTextModel → PoolEmbedding` steps using directory-based tokenizer auto-detection
+1. **Composable Modular Pipeline** — Explicit `TokenizeText → ScoreOnnxTextEmbedding → PoolEmbedding` steps using directory-based tokenizer auto-detection
 2. **Semantic search demo** — Rank a corpus of documents against multiple queries, showing how the model correctly identifies the most relevant passages without any prefix engineering
 3. **Chained Estimator Pipeline (`.Append`)** — Idiomatic ML.NET pattern with all three transforms chained
 4. **Convenience Facade** — `OnnxTextEmbeddingEstimator` as a single-shot alternative, verified to produce identical results
@@ -61,7 +61,7 @@ This sample uses the modular pipeline with reusable fitted transforms:
 
 ```csharp
 var tokenizer = mlContext.Transforms.TokenizeText(tokenizerOpts).Fit(dataView);
-var scorer = mlContext.Transforms.ScoreOnnxTextModel(scorerOpts).Fit(tokenized);
+var scorer = mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts).Fit(tokenized);
 var pooler = mlContext.Transforms.PoolEmbedding(poolingOpts).Fit(scored);
 
 // Helper function reuses the fitted pipeline for multiple batches

@@ -29,7 +29,7 @@ namespace MLNet.Embeddings.Onnx;
 
 /// <summary>
 /// ML.NET IEstimator that creates an OnnxTextEmbeddingTransformer.
-/// Internally composes TextTokenizerEstimator → OnnxTextModelScorerEstimator → EmbeddingPoolingEstimator.
+/// Internally composes TextTokenizerEstimator → OnnxTextEmbeddingScorerEstimator → EmbeddingPoolingEstimator.
 /// </summary>
 public sealed class OnnxTextEmbeddingEstimator : IEstimator<OnnxTextEmbeddingTransformer>
 {
@@ -69,7 +69,7 @@ public sealed class OnnxTextEmbeddingEstimator : IEstimator<OnnxTextEmbeddingTra
         // We need tokenized data to validate scorer input schema
         var tokenizedData = tokenizerTransformer.Transform(input);
 
-        var scorerOptions = new OnnxTextModelScorerOptions
+        var scorerOptions = new OnnxTextEmbeddingScorerOptions
         {
             ModelPath = _options.ModelPath,
             MaxTokenLength = _options.MaxTokenLength,
@@ -80,7 +80,7 @@ public sealed class OnnxTextEmbeddingEstimator : IEstimator<OnnxTextEmbeddingTra
             TokenTypeIdsTensorName = _options.TokenTypeIdsName,
             OutputTensorName = _options.OutputTensorName,
         };
-        var scorerEstimator = new OnnxTextModelScorerEstimator(_mlContext, scorerOptions);
+        var scorerEstimator = new OnnxTextEmbeddingScorerEstimator(_mlContext, scorerOptions);
         var scorerTransformer = scorerEstimator.Fit(tokenizedData);
 
         // 3. Create and fit the pooler (auto-configured from scorer metadata)
@@ -130,7 +130,7 @@ public sealed class OnnxTextEmbeddingTransformer : ITransformer, IDisposable
 
     // Internal sub-transforms
     private readonly TextTokenizerTransformer _tokenizer;
-    private readonly OnnxTextModelScorerTransformer _scorer;
+    private readonly OnnxTextEmbeddingScorerTransformer _scorer;
     private readonly EmbeddingPoolingTransformer _pooler;
 
     public bool IsRowToRowMapper => true;
@@ -140,14 +140,14 @@ public sealed class OnnxTextEmbeddingTransformer : ITransformer, IDisposable
 
     // Expose sub-transforms for advanced users
     internal TextTokenizerTransformer Tokenizer => _tokenizer;
-    internal OnnxTextModelScorerTransformer Scorer => _scorer;
+    internal OnnxTextEmbeddingScorerTransformer Scorer => _scorer;
     internal EmbeddingPoolingTransformer Pooler => _pooler;
 
     internal OnnxTextEmbeddingTransformer(
         MLContext mlContext,
         OnnxTextEmbeddingOptions options,
         TextTokenizerTransformer tokenizer,
-        OnnxTextModelScorerTransformer scorer,
+        OnnxTextEmbeddingScorerTransformer scorer,
         EmbeddingPoolingTransformer pooler)
     {
         _mlContext = mlContext;

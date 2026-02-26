@@ -8,7 +8,7 @@ The three-way split creates a reusable foundation for ANY transformer-based ONNX
                     TextTokenizerTransformer
                             │
                             ▼
-                 OnnxTextModelScorerTransformer
+                 OnnxTextEmbeddingScorerTransformer
                             │
             ┌───────────────┼───────────────────────────┐
             │               │               │           │
@@ -48,7 +48,7 @@ public class SoftmaxClassificationOptions
 
 ```csharp
 var pipeline = mlContext.Transforms.TokenizeText(tokOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.SoftmaxClassify(new SoftmaxClassificationOptions
     {
         Labels = ["negative", "neutral", "positive"]
@@ -99,7 +99,7 @@ public class NerDecodingOptions
 
 ```csharp
 var pipeline = mlContext.Transforms.TokenizeText(tokOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.DecodeNer(nerOpts));
 ```
 
@@ -135,7 +135,7 @@ public class SigmoidScorerOptions
 
 ```csharp
 var pipeline = mlContext.Transforms.TokenizeTextPair(tokOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.SigmoidScore(sigmoidOpts));
 ```
 
@@ -179,7 +179,7 @@ Same as cross-encoder similarity, but used in a retrieval context:
 ```csharp
 // Score all query-document pairs
 var pipeline = mlContext.Transforms.TokenizeTextPair(tokOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.SigmoidScore(sigmoidOpts));
 
 // Sort by score descending
@@ -208,7 +208,7 @@ These would be added to `TextTokenizerTransformer` as optional capabilities, not
 | Multi-output tensor support | QA (start_logits + end_logits) | Medium |
 | Dynamic output column names | Tasks with multiple outputs | Low |
 
-Currently the scorer outputs a single tensor. QA models often have two output tensors. This could be handled by allowing multiple output column names in `OnnxTextModelScorerOptions`.
+Currently the scorer outputs a single tensor. QA models often have two output tensors. This could be handled by allowing multiple output column names in `OnnxTextEmbeddingScorerOptions`.
 
 ## Implementation Priority
 

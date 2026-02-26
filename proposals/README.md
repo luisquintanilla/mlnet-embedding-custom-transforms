@@ -7,7 +7,7 @@ Decompose `OnnxTextEmbeddingTransformer` into three composable ML.NET transforms
 | Transform | Responsibility | Reusability |
 |-----------|---------------|-------------|
 | `TextTokenizerTransformer` | Text → token IDs + attention mask | Any transformer model |
-| `OnnxTextModelScorerTransformer` | Token columns → raw ONNX output | Any transformer ONNX model |
+| `OnnxTextEmbeddingScorerTransformer` | Token columns → raw ONNX output | Any transformer ONNX model |
 | `EmbeddingPoolingTransformer` | Raw output → pooled embedding | Embedding generation |
 
 The existing `OnnxTextEmbeddingEstimator` becomes a convenience facade that chains all three, preserving the current API.
@@ -27,7 +27,7 @@ See [architecture.md](architecture.md) for the full component diagram and data f
 ## Detailed Specifications
 
 - [01-text-tokenizer-transform.md](01-text-tokenizer-transform.md) — TextTokenizerEstimator / TextTokenizerTransformer
-- [02-onnx-text-model-scorer-transform.md](02-onnx-text-model-scorer-transform.md) — OnnxTextModelScorerEstimator / OnnxTextModelScorerTransformer
+- [02-onnx-text-embedding-scorer-transform.md](02-onnx-text-embedding-scorer-transform.md) — OnnxTextEmbeddingScorerEstimator / OnnxTextEmbeddingScorerTransformer
 - [03-embedding-pooling-transform.md](03-embedding-pooling-transform.md) — EmbeddingPoolingEstimator / EmbeddingPoolingTransformer
 - [04-facade-refactor.md](04-facade-refactor.md) — OnnxTextEmbeddingEstimator / OnnxTextEmbeddingTransformer refactoring
 - [05-meai-integration.md](05-meai-integration.md) — OnnxEmbeddingGenerator and IEmbeddingGenerator-backed transform

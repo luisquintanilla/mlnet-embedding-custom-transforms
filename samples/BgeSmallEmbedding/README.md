@@ -14,7 +14,7 @@ Demonstrates [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v
 
 ## What This Sample Shows
 
-1. **Composable Modular Pipeline** — Explicit `TokenizeText → ScoreOnnxTextModel → PoolEmbedding` steps using directory-based tokenizer auto-detection
+1. **Composable Modular Pipeline** — Explicit `TokenizeText → ScoreOnnxTextEmbedding → PoolEmbedding` steps using directory-based tokenizer auto-detection
 2. **Query prefix for retrieval** — BGE models recommend prepending `"Represent this sentence: "` to queries when doing retrieval against a passage corpus. The sample compares similarity scores with and without the prefix to show its effect
 3. **Chained Estimator Pipeline (`.Append`)** — Idiomatic ML.NET pattern with all three transforms chained
 4. **Convenience Facade** — `OnnxTextEmbeddingEstimator` as a single-shot alternative, verified to produce identical results
@@ -64,7 +64,7 @@ This sample demonstrates the modular pipeline where each step is a separate, ins
 ```csharp
 // Each transform can be inspected and reused independently
 var tokenizer = mlContext.Transforms.TokenizeText(tokenizerOpts).Fit(dataView);
-var scorer = mlContext.Transforms.ScoreOnnxTextModel(scorerOpts).Fit(tokenized);
+var scorer = mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts).Fit(tokenized);
 var pooler = mlContext.Transforms.PoolEmbedding(poolingOpts).Fit(scored);
 
 // Reuse the fitted pipeline for multiple embedding calls

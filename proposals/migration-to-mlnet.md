@@ -63,13 +63,13 @@ TokenizerCursor : DataViewRowCursor        │   ... reconstruct transformer
 
 **What carries over:** `Tokenize()` (direct face), `LoadTokenizer()`, `TokenizedBatch`, all tokenization math.
 
-### OnnxTextModelScorerTransformer
+### OnnxTextEmbeddingScorerTransformer
 
 ```
 BEFORE (Approach C):                        AFTER (Approach D):
 ─────────────────────                       ─────────────────────
 
-OnnxTextModelScorerTransformer : ITransformer  OnnxTextModelScorerTransformer : RowToRowTransformerBase
+OnnxTextEmbeddingScorerTransformer : ITransformer  OnnxTextEmbeddingScorerTransformer : RowToRowTransformerBase
 ├─ Transform() → returns ScorerDataView        ├─ MakeRowMapper() → returns Mapper
 ├─ RunOnnxBatch() (shared inference logic)     ├─ RunOnnxBatch() (unchanged — shared logic)
 ├─ Score() (direct face)                       ├─ Score() (direct face, unchanged)
@@ -219,7 +219,7 @@ Each transform needs `[LoadableClass]` registrations for the ML.NET loader disco
     TextTokenizerTransformer.UserName,
     TextTokenizerTransformer.LoaderSignature)]
 
-// ... similar for OnnxTextModelScorerTransformer, EmbeddingPoolingTransformer
+// ... similar for OnnxTextEmbeddingScorerTransformer, EmbeddingPoolingTransformer
 ```
 
 ## What the Prototype Validates
