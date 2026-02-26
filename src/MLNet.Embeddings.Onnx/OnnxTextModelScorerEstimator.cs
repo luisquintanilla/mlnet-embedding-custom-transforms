@@ -104,8 +104,7 @@ public sealed class OnnxTextModelScorerEstimator : IEstimator<OnnxTextModelScore
         if (_options.TokenTypeIdsColumnName != null)
             ValidateColumn(input.Schema, _options.TokenTypeIdsColumnName);
 
-        var sessionOptions = CreateSessionOptions();
-        var session = new InferenceSession(_options.ModelPath, sessionOptions);
+        var session = CreateInferenceSession();
         var metadata = DiscoverModelMetadata(session);
 
         return new OnnxTextModelScorerTransformer(_mlContext, _options, session, metadata);
@@ -190,12 +189,31 @@ public sealed class OnnxTextModelScorerEstimator : IEstimator<OnnxTextModelScore
     /// </summary>
     internal OnnxModelMetadata DiscoverModelMetadata()
     {
-        var sessionOptions = CreateSessionOptions();
-        using var session = new InferenceSession(_options.ModelPath, sessionOptions);
+        using var session = CreateInferenceSession();
         return DiscoverModelMetadata(session);
     }
 
-    private SessionOptions CreateSessionOptions()
+    /// <summary>
+    /// Creates an InferenceSession with GPU support if configured.
+    /// If FallbackToCpu is true, catches CUDA failures and retries with CPU-only options.
+    /// </summary>
+    private InferenceSession CreateInferenceSession()
+    {
+        var (sessionOptions, fallbackToCpu) = CreateSessionOptions();
+
+        try
+        {
+            return new InferenceSession(_options.ModelPath, sessionOptions);
+        }
+        catch (OnnxRuntimeException) when (fallbackToCpu)
+        {
+            // CUDA initialization failed (invalid device, driver mismatch, etc.)
+            // Fall back to CPU-only session.
+            return new InferenceSession(_options.ModelPath, new SessionOptions());
+        }
+    }
+
+    private (SessionOptions options, bool fallbackToCpu) CreateSessionOptions()
     {
         // Resolve GPU device: per-estimator option → MLContext.GpuDeviceId → null (CPU)
         int? deviceId = _options.GpuDeviceId ?? _mlContext.GpuDeviceId;
@@ -216,11 +234,11 @@ public sealed class OnnxTextModelScorerEstimator : IEstimator<OnnxTextModelScore
             }
             catch (Exception) when (fallbackToCpu)
             {
-                // CUDA not available — silently fall back to CPU
+                // CUDA libraries not available — fall back to CPU
             }
         }
 
-        return options;
+        return (options, fallbackToCpu);
     }
 
     private static string FindTensorName(
