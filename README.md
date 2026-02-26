@@ -196,6 +196,43 @@ Models with `sentence_embedding` output (pre-pooled) are auto-detected and pooli
 
 The library supports GPU-accelerated ONNX inference via CUDA. The library itself ships with no native binaries — you control the execution provider by choosing your OnnxRuntime package.
 
+### GPU Prerequisites
+
+GPU inference requires the [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) and [cuDNN](https://developer.nvidia.com/cudnn) installed on the host machine, plus an NVIDIA GPU with a compatible driver.
+
+**Windows (winget + direct download):**
+
+```powershell
+# 1. Install CUDA Toolkit 12.6
+winget install Nvidia.CUDA --version 12.6 --source winget
+
+# 2. Download and install cuDNN 9.x for CUDA 12
+#    Download the zip from NVIDIA's redistributable endpoint:
+$url = "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.8.0.87_cuda12-archive.zip"
+Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\cudnn.zip"
+Expand-Archive "$env:TEMP\cudnn.zip" -DestinationPath "$env:TEMP\cudnn"
+
+# 3. Copy cuDNN DLLs to CUDA bin (requires admin)
+Copy-Item "$env:TEMP\cudnn\cudnn-*\bin\*.dll" "$env:CUDA_PATH\bin" -Force
+```
+
+**Linux (apt):**
+
+```bash
+# CUDA Toolkit
+sudo apt-get install -y nvidia-cuda-toolkit
+
+# cuDNN (via NVIDIA's apt repository)
+# See: https://docs.nvidia.com/deeplearning/cudnn/installation/linux.html
+```
+
+**Verify installation:**
+
+```powershell
+nvidia-smi                    # Should show GPU + driver version
+nvcc --version                # Should show CUDA 12.x
+```
+
 ### Package Setup
 
 Replace `Microsoft.ML.OnnxRuntime` with `Microsoft.ML.OnnxRuntime.Gpu` in your application:
@@ -204,7 +241,7 @@ Replace `Microsoft.ML.OnnxRuntime` with `Microsoft.ML.OnnxRuntime.Gpu` in your a
 <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.2" />
 ```
 
-**Prerequisites:** NVIDIA GPU, CUDA Toolkit, and cuDNN. See [ORT CUDA Execution Provider docs](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html) for version requirements.
+> **Samples auto-detect GPU:** The sample projects use a `Directory.Build.props` that checks for `CUDA_PATH` (set by the CUDA Toolkit installer) and automatically switches to `Microsoft.ML.OnnxRuntime.Gpu`. Override with `dotnet build -p:UseGpuRuntime=true` or `dotnet build -p:UseGpuRuntime=false`.
 
 ### Usage
 
