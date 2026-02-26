@@ -18,7 +18,7 @@ This project implements a custom transform using direct `IEstimator<T>` / `ITran
 
 ## Features
 
-- **Composable modular pipeline** — three independent transforms (`TokenizeText → ScoreOnnxTextModel → PoolEmbedding`) that can be inspected, swapped, and reused
+- **Composable modular pipeline** — three independent transforms (`TokenizeText → ScoreOnnxTextEmbedding → PoolEmbedding`) that can be inspected, swapped, and reused
 - **Convenience facade** — `OnnxTextEmbeddingEstimator` wraps all three transforms in a single call
 - **Provider-agnostic MEAI integration** — `EmbeddingGeneratorEstimator` wraps any `IEmbeddingGenerator<string, Embedding<float>>` as an ML.NET transform
 - **Smart tokenizer resolution** — point to a directory; auto-detects from `tokenizer_config.json` or known vocab files (BPE, SentencePiece, WordPiece)
@@ -62,7 +62,7 @@ var tokenizer = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
     InputColumnName = "Text"
 }).Fit(data);
 
-var scorer = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+var scorer = mlContext.Transforms.ScoreOnnxTextEmbedding(new OnnxTextEmbeddingScorerOptions
 {
     ModelPath = "models/model.onnx"
 }).Fit(tokenizer.Transform(data));
@@ -81,7 +81,7 @@ Or chain with `.Append()` for the idiomatic ML.NET pattern:
 
 ```csharp
 var pipeline = mlContext.Transforms.TokenizeText(tokenizerOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.PoolEmbedding(poolingOpts));
 var model = pipeline.Fit(data);
 ```
@@ -126,7 +126,7 @@ var loaded = OnnxTextEmbeddingTransformer.Load(mlContext, "my-embedding-model.ml
 mlnet-embedding-custom-transforms/
 ├── src/MLNet.Embeddings.Onnx/
 │   ├── TextTokenizerEstimator.cs         — Transform 1: tokenization (BPE/WordPiece/SentencePiece)
-│   ├── OnnxTextModelScorerEstimator.cs   — Transform 2: ONNX inference with lookahead batching
+│   ├── OnnxTextEmbeddingScorerEstimator.cs   — Transform 2: ONNX inference with lookahead batching
 │   ├── EmbeddingPoolingEstimator.cs      — Transform 3: pooling + L2 normalization
 │   ├── OnnxTextEmbeddingEstimator.cs     — Convenience facade (chains all three)
 │   ├── EmbeddingGeneratorEstimator.cs    — Provider-agnostic MEAI wrapper
@@ -170,7 +170,7 @@ mlnet-embedding-custom-transforms/
 | Class | Role | Key Methods |
 |-------|------|-------------|
 | `TextTokenizerEstimator` | Transform 1: Tokenization | `Fit(IDataView)` |
-| `OnnxTextModelScorerEstimator` | Transform 2: ONNX Scoring | `Fit(IDataView)` → `.HiddenDim`, `.HasPooledOutput` |
+| `OnnxTextEmbeddingScorerEstimator` | Transform 2: ONNX Scoring | `Fit(IDataView)` → `.HiddenDim`, `.HasPooledOutput` |
 | `EmbeddingPoolingEstimator` | Transform 3: Pooling | `Fit(IDataView)` |
 | `OnnxTextEmbeddingEstimator` | Facade (chains 1→2→3) | `Fit(IDataView)`, `GetOutputSchema()` |
 | `OnnxTextEmbeddingTransformer` | Facade transformer | `Transform(IDataView)`, `Save(path)`, `Load(ctx, path)` |
@@ -257,7 +257,7 @@ var estimator = new OnnxTextEmbeddingEstimator(mlContext, new OnnxTextEmbeddingO
 });
 
 // Pattern 2: Per-estimator override
-var scorerOptions = new OnnxTextModelScorerOptions
+var scorerOptions = new OnnxTextEmbeddingScorerOptions
 {
     ModelPath = "models/model.onnx",
     GpuDeviceId = 0,       // Override for this estimator only

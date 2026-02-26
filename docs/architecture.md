@@ -10,7 +10,7 @@ This document walks through every component in the solution and traces the data 
 │                                                                              │
 │  // Composable pipeline (new):                                               │
 │  var pipeline = mlContext.Transforms.TokenizeText(tokenizerOpts)             │
-│      .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))            │
+│      .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))            │
 │      .Append(mlContext.Transforms.PoolEmbedding(poolingOpts));               │
 │                                                                              │
 │  // Convenience API (unchanged):                                             │
@@ -42,7 +42,7 @@ This document walks through every component in the solution and traces the data 
 │             Reusable Foundation (any transformer ONNX model)                  │
 │                                                                              │
 │  ┌────────────────────┐     ┌──────────────────────────────┐                 │
-│  │ TextTokenizer-     │     │ OnnxTextModelScorer-         │                 │
+│  │ TextTokenizer-     │     │ OnnxTextEmbeddingScorer-         │                 │
 │  │ Transformer        │     │ Transformer                  │                 │
 │  │                    │     │                              │                 │
 │  │ Text →             │     │ TokenIds + AttentionMask +   │                 │
@@ -86,7 +86,7 @@ TextTokenizerTransformer:
   │ AttentionMask (VBuffer<long>)       ← NEW: 1=real token, 0=padding
   │ TokenTypeIds (VBuffer<long>)        ← NEW: zeros (segment IDs)
   ▼
-OnnxTextModelScorerTransformer:
+OnnxTextEmbeddingScorerTransformer:
   │ Text (string)                       ← passed through
   │ TokenIds (VBuffer<long>)            ← passed through
   │ AttentionMask (VBuffer<long>)       ← passed through
@@ -144,7 +144,7 @@ Fit(IDataView input)
   ├─ 1. Create TextTokenizerEstimator → Fit → TextTokenizerTransformer
   │     Loads tokenizer via smart resolution (directory/config/vocab file)
   │
-  ├─ 2. Create OnnxTextModelScorerEstimator → Fit → OnnxTextModelScorerTransformer
+  ├─ 2. Create OnnxTextEmbeddingScorerEstimator → Fit → OnnxTextEmbeddingScorerTransformer
   │     Creates InferenceSession, auto-discovers tensor metadata
   │
   ├─ 3. Create EmbeddingPoolingEstimator → Fit → EmbeddingPoolingTransformer

@@ -13,7 +13,7 @@ public sealed class OnnxTextEmbeddingTransformer : ITransformer, IDisposable
     private readonly OnnxTextEmbeddingOptions _options;
 
     private readonly TextTokenizerTransformer _tokenizer;
-    private readonly OnnxTextModelScorerTransformer _scorer;
+    private readonly OnnxTextEmbeddingScorerTransformer _scorer;
     private readonly EmbeddingPoolingTransformer _pooler;
 
     public bool IsRowToRowMapper => true;
@@ -22,14 +22,14 @@ public sealed class OnnxTextEmbeddingTransformer : ITransformer, IDisposable
     public int EmbeddingDimension => _scorer.HiddenDim;
 
     internal TextTokenizerTransformer Tokenizer => _tokenizer;
-    internal OnnxTextModelScorerTransformer Scorer => _scorer;
+    internal OnnxTextEmbeddingScorerTransformer Scorer => _scorer;
     internal EmbeddingPoolingTransformer Pooler => _pooler;
 
     internal OnnxTextEmbeddingTransformer(
         MLContext mlContext,
         OnnxTextEmbeddingOptions options,
         TextTokenizerTransformer tokenizer,
-        OnnxTextModelScorerTransformer scorer,
+        OnnxTextEmbeddingScorerTransformer scorer,
         EmbeddingPoolingTransformer pooler)
     {
         _mlContext = mlContext;

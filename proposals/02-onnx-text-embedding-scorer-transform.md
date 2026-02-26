@@ -1,10 +1,10 @@
-# Transform 2: OnnxTextModelScorerEstimator / OnnxTextModelScorerTransformer
+# Transform 2: OnnxTextEmbeddingScorerEstimator / OnnxTextEmbeddingScorerTransformer
 
 ## Purpose
 
 Runs ONNX inference on tokenized text inputs. This is the **universal second step** for any transformer-based ONNX model task. It takes token columns (produced by `TextTokenizerTransformer`) and outputs the raw model tensor. It is intentionally **task-agnostic** — it doesn't know whether the output will be pooled into embeddings, softmaxed into class probabilities, or decoded into entity spans.
 
-## Why "OnnxTextModelScorer" and not "OnnxScorer"?
+## Why "OnnxTextEmbeddingScorer" and not "OnnxScorer"?
 
 - ML.NET already has `OnnxScoringEstimator` / `OnnxTransformer` in `Microsoft.ML.OnnxTransformer` — a general-purpose ONNX inference transform that takes arbitrary named columns.
 - Our transform is specialized for **transformer-architecture text models**: it expects tokenized input (`input_ids`, `attention_mask`, `token_type_ids`) and auto-discovers tensor names using transformer-model conventions.
@@ -14,8 +14,8 @@ Runs ONNX inference on tokenized text inputs. This is the **universal second ste
 
 | File | Contents |
 |------|----------|
-| `src/MLNet.Embeddings.Onnx/OnnxTextModelScorerEstimator.cs` | Estimator + options class |
-| `src/MLNet.Embeddings.Onnx/OnnxTextModelScorerTransformer.cs` | Transformer |
+| `src/MLNet.Embeddings.Onnx/OnnxTextEmbeddingScorerEstimator.cs` | Estimator + options class |
+| `src/MLNet.Embeddings.Onnx/OnnxTextEmbeddingScorerTransformer.cs` | Transformer |
 
 ## Options Class
 
@@ -23,10 +23,10 @@ Runs ONNX inference on tokenized text inputs. This is the **universal second ste
 namespace MLNet.Embeddings.Onnx;
 
 /// <summary>
-/// Configuration for the ONNX text model scorer transform.
+/// Configuration for the ONNX text embedding scorer transform.
 /// Runs inference on a transformer-architecture ONNX model (BERT, MiniLM, etc.).
 /// </summary>
-public class OnnxTextModelScorerOptions
+public class OnnxTextEmbeddingScorerOptions
 {
     /// <summary>Path to the ONNX model file.</summary>
     public required string ModelPath { get; set; }
@@ -95,15 +95,15 @@ This separation is important because column names are a pipeline concern (how tr
 namespace MLNet.Embeddings.Onnx;
 
 /// <summary>
-/// ML.NET IEstimator that creates an OnnxTextModelScorerTransformer.
+/// ML.NET IEstimator that creates an OnnxTextEmbeddingScorerTransformer.
 /// Fit() validates the input schema, loads the ONNX model, and auto-discovers tensor metadata.
 /// </summary>
-public sealed class OnnxTextModelScorerEstimator : IEstimator<OnnxTextModelScorerTransformer>
+public sealed class OnnxTextEmbeddingScorerEstimator : IEstimator<OnnxTextEmbeddingScorerTransformer>
 {
     private readonly MLContext _mlContext;
-    private readonly OnnxTextModelScorerOptions _options;
+    private readonly OnnxTextEmbeddingScorerOptions _options;
 
-    public OnnxTextModelScorerEstimator(MLContext mlContext, OnnxTextModelScorerOptions options)
+    public OnnxTextEmbeddingScorerEstimator(MLContext mlContext, OnnxTextEmbeddingScorerOptions options)
     {
         _mlContext = mlContext ?? throw new ArgumentNullException(nameof(mlContext));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -112,7 +112,7 @@ public sealed class OnnxTextModelScorerEstimator : IEstimator<OnnxTextModelScore
             throw new FileNotFoundException($"ONNX model not found: {options.ModelPath}");
     }
 
-    public OnnxTextModelScorerTransformer Fit(IDataView input)
+    public OnnxTextEmbeddingScorerTransformer Fit(IDataView input)
     {
         // Validate input schema has token columns
         ValidateColumn(input.Schema, _options.TokenIdsColumnName);
@@ -124,7 +124,7 @@ public sealed class OnnxTextModelScorerEstimator : IEstimator<OnnxTextModelScore
         var session = new InferenceSession(_options.ModelPath);
         var metadata = DiscoverModelMetadata(session);
 
-        return new OnnxTextModelScorerTransformer(
+        return new OnnxTextEmbeddingScorerTransformer(
             _mlContext, _options, session, metadata);
     }
 
@@ -228,16 +228,16 @@ namespace MLNet.Embeddings.Onnx;
 /// This gives batch throughput (~1ms/item at batch=32) with lazy memory semantics
 /// (~6 MB peak instead of ~1.9 GB for 10K rows).
 /// </summary>
-public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
+public sealed class OnnxTextEmbeddingScorerTransformer : ITransformer, IDisposable
 {
     private readonly MLContext _mlContext;
-    private readonly OnnxTextModelScorerOptions _options;
+    private readonly OnnxTextEmbeddingScorerOptions _options;
     private readonly InferenceSession _session;
     private readonly OnnxModelMetadata _metadata;
 
     public bool IsRowToRowMapper => true;
 
-    internal OnnxTextModelScorerOptions Options => _options;
+    internal OnnxTextEmbeddingScorerOptions Options => _options;
 
     /// <summary>Hidden dimension of the model output.</summary>
     public int HiddenDim => _metadata.HiddenDim;
@@ -248,9 +248,9 @@ public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
     /// <summary>Auto-discovered ONNX metadata.</summary>
     internal OnnxModelMetadata Metadata => _metadata;
 
-    internal OnnxTextModelScorerTransformer(
+    internal OnnxTextEmbeddingScorerTransformer(
         MLContext mlContext,
-        OnnxTextModelScorerOptions options,
+        OnnxTextEmbeddingScorerOptions options,
         InferenceSession session,
         OnnxModelMetadata metadata)
     {
@@ -398,13 +398,13 @@ serves results one at a time. This gives batch throughput with lazy memory seman
 internal sealed class ScorerDataView : IDataView
 {
     private readonly IDataView _input;
-    private readonly OnnxTextModelScorerTransformer _scorer;
+    private readonly OnnxTextEmbeddingScorerTransformer _scorer;
 
     public DataViewSchema Schema { get; }
     public bool CanShuffle => false;
     public long? GetRowCount() => _input.GetRowCount();
 
-    internal ScorerDataView(IDataView input, OnnxTextModelScorerTransformer scorer)
+    internal ScorerDataView(IDataView input, OnnxTextEmbeddingScorerTransformer scorer)
     {
         _input = input;
         _scorer = scorer;
@@ -471,7 +471,7 @@ internal sealed class ScorerCursor : DataViewRowCursor
 {
     private readonly ScorerDataView _parent;
     private readonly DataViewRowCursor _inputCursor;
-    private readonly OnnxTextModelScorerTransformer _scorer;
+    private readonly OnnxTextEmbeddingScorerTransformer _scorer;
 
     // Lookahead batch state
     private float[][]? _batchResults;
@@ -492,7 +492,7 @@ internal sealed class ScorerCursor : DataViewRowCursor
     internal ScorerCursor(
         ScorerDataView parent,
         DataViewRowCursor inputCursor,
-        OnnxTextModelScorerTransformer scorer)
+        OnnxTextEmbeddingScorerTransformer scorer)
     {
         _parent = parent;
         _inputCursor = inputCursor;
@@ -663,10 +663,10 @@ and token arrays for 32 rows).
 
 | Source | What to Extract | Target |
 |--------|----------------|--------|
-| `OnnxTextEmbeddingEstimator.DiscoverModelMetadata()` | Tensor auto-discovery | `OnnxTextModelScorerEstimator.DiscoverModelMetadata()` |
-| `OnnxTextEmbeddingEstimator.FindTensorName()` | Tensor name lookup | `OnnxTextModelScorerEstimator.FindTensorName()` |
-| `OnnxTextEmbeddingEstimator.TryFindTensorName()` | Tensor name lookup | `OnnxTextModelScorerEstimator.TryFindTensorName()` |
-| `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 156-189 | ONNX batch inference | `OnnxTextModelScorerTransformer.RunOnnxBatch()` |
+| `OnnxTextEmbeddingEstimator.DiscoverModelMetadata()` | Tensor auto-discovery | `OnnxTextEmbeddingScorerEstimator.DiscoverModelMetadata()` |
+| `OnnxTextEmbeddingEstimator.FindTensorName()` | Tensor name lookup | `OnnxTextEmbeddingScorerEstimator.FindTensorName()` |
+| `OnnxTextEmbeddingEstimator.TryFindTensorName()` | Tensor name lookup | `OnnxTextEmbeddingScorerEstimator.TryFindTensorName()` |
+| `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 156-189 | ONNX batch inference | `OnnxTextEmbeddingScorerTransformer.RunOnnxBatch()` |
 
 ## Key Design Decisions
 
@@ -697,7 +697,7 @@ This avoids code duplication between the two paths.
 When migrating to ML.NET, this transform becomes:
 
 ```
-OnnxTextModelScorerTransformer : RowToRowTransformerBase
+OnnxTextEmbeddingScorerTransformer : RowToRowTransformerBase
   Mapper : MapperBase
     MakeGetter() → lookahead batching cache + RunOnnxBatch()
     GetOutputColumnsCore() → output column definition
@@ -720,7 +720,7 @@ to the cursor's `FillNextBatch()` pattern.
 
 ## Acceptance Criteria
 
-1. `OnnxTextModelScorerEstimator` can be created with a valid ONNX model path
+1. `OnnxTextEmbeddingScorerEstimator` can be created with a valid ONNX model path
 2. `Fit()` validates that token columns exist in the input schema
 3. `Fit()` auto-discovers ONNX tensor metadata (input/output names, dimensions)
 4. `Transform()` returns a wrapping IDataView (no materialization)

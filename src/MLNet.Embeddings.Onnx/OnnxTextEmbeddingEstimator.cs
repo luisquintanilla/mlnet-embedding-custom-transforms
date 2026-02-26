@@ -5,7 +5,7 @@ namespace MLNet.Embeddings.Onnx;
 
 /// <summary>
 /// ML.NET IEstimator that creates an OnnxTextEmbeddingTransformer.
-/// Internally composes TextTokenizerEstimator → OnnxTextModelScorerEstimator → EmbeddingPoolingEstimator.
+/// Internally composes TextTokenizerEstimator → OnnxTextEmbeddingScorerEstimator → EmbeddingPoolingEstimator.
 /// </summary>
 public sealed class OnnxTextEmbeddingEstimator : IEstimator<OnnxTextEmbeddingTransformer>
 {
@@ -43,7 +43,7 @@ public sealed class OnnxTextEmbeddingEstimator : IEstimator<OnnxTextEmbeddingTra
         // 2. Create and fit the scorer
         var tokenizedData = tokenizerTransformer.Transform(input);
 
-        var scorerOptions = new OnnxTextModelScorerOptions
+        var scorerOptions = new OnnxTextEmbeddingScorerOptions
         {
             ModelPath = _options.ModelPath,
             MaxTokenLength = _options.MaxTokenLength,
@@ -55,7 +55,7 @@ public sealed class OnnxTextEmbeddingEstimator : IEstimator<OnnxTextEmbeddingTra
             GpuDeviceId = _options.GpuDeviceId,
             FallbackToCpu = _options.FallbackToCpu,
         };
-        var scorerEstimator = new OnnxTextModelScorerEstimator(_mlContext, scorerOptions);
+        var scorerEstimator = new OnnxTextEmbeddingScorerEstimator(_mlContext, scorerOptions);
         var scorerTransformer = scorerEstimator.Fit(tokenizedData);
 
         // 3. Create and fit the pooler (auto-configured from scorer metadata)
@@ -91,7 +91,7 @@ public sealed class OnnxTextEmbeddingEstimator : IEstimator<OnnxTextEmbeddingTra
 
         // Probe the model to get embedding dimension
         int embeddingDim;
-        var scorerEstimator = new OnnxTextModelScorerEstimator(_mlContext, new OnnxTextModelScorerOptions
+        var scorerEstimator = new OnnxTextEmbeddingScorerEstimator(_mlContext, new OnnxTextEmbeddingScorerOptions
         {
             ModelPath = _options.ModelPath,
             InputIdsTensorName = _options.InputIdsName,

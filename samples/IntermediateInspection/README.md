@@ -19,7 +19,7 @@ After `TokenizeText`, you can inspect:
 
 ### Stage 2: ONNX Scoring
 
-After `ScoreOnnxTextModel`, you can inspect:
+After `ScoreOnnxTextEmbedding`, you can inspect:
 - **Hidden dimension** — The model's internal representation size (384 for MiniLM)
 - **Pre-pooled output** — Whether the model provides a `sentence_embedding` output
 - **Raw output column type** — The shape and data type of the ONNX model output

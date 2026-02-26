@@ -9,7 +9,7 @@ The monolithic `OnnxTextEmbeddingTransformer` — a single 380-line class that h
 | Transform | Responsibility |
 |-----------|---------------|
 | `TextTokenizerTransformer` | Text → token IDs + attention mask |
-| `OnnxTextModelScorerTransformer` | Token IDs → raw model output (last_hidden_state) |
+| `OnnxTextEmbeddingScorerTransformer` | Token IDs → raw model output (last_hidden_state) |
 | `EmbeddingPoolingTransformer` | Raw output → pooled, normalized embedding vector |
 
 The original monolithic API still works — `OnnxTextEmbeddingEstimator` is now a thin facade that chains the three transforms internally. Two new integration points were added: `EmbeddingGeneratorEstimator` for provider-agnostic MEAI pipelines, and smart tokenizer resolution that auto-detects tokenizer type from HuggingFace model directories.
@@ -89,7 +89,7 @@ src/MLNet.Embeddings.Onnx/
 │                                                              │
 │  // Composable (new):                                        │
 │  var pipeline = mlContext.Transforms.TokenizeText(...)       │
-│      .Append(mlContext.Transforms.ScoreOnnxTextModel(...))   │
+│      .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(...))   │
 │      .Append(mlContext.Transforms.PoolEmbedding(...));       │
 │                                                              │
 │  // Facade (unchanged API):                                  │
@@ -113,7 +113,7 @@ src/MLNet.Embeddings.Onnx/
 └──────┬──────┘
        │
 ┌──────▼──────────────┐
-│ OnnxTextModelScorer  │
+│ OnnxTextEmbeddingScorer  │
 │ Transformer          │
 │ (410 lines)          │
 │ - InferenceSession   │
@@ -136,8 +136,8 @@ src/MLNet.Embeddings.Onnx/
 src/MLNet.Embeddings.Onnx/
 ├── TextTokenizerEstimator.cs           (239 lines — NEW: smart tokenizer resolution)
 ├── TextTokenizerTransformer.cs         (235 lines — NEW: BPE/WordPiece/SentencePiece)
-├── OnnxTextModelScorerEstimator.cs     (168 lines — NEW: ONNX metadata discovery)
-├── OnnxTextModelScorerTransformer.cs   (410 lines — NEW: lookahead batching, lazy cursor)
+├── OnnxTextEmbeddingScorerEstimator.cs     (168 lines — NEW: ONNX metadata discovery)
+├── OnnxTextEmbeddingScorerTransformer.cs   (410 lines — NEW: lookahead batching, lazy cursor)
 ├── EmbeddingPoolingEstimator.cs        (95 lines  — NEW: pooling configuration)
 ├── EmbeddingPoolingTransformer.cs      (223 lines — NEW: Mean/CLS/Max + normalize)
 ├── OnnxTextEmbeddingEstimator.cs       (105 lines — REFACTORED: now chains 3 transforms)
@@ -202,7 +202,7 @@ var estimator = new OnnxTextEmbeddingEstimator(mlContext, options);
 
 // NEW: composable pipeline
 var pipeline = mlContext.Transforms.TokenizeText(tokOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.PoolEmbedding(poolOpts));
 
 // NEW: provider-agnostic
@@ -323,7 +323,7 @@ TokenizerPath = "models/llama-model/"
 
 ```csharp
 var pipeline = mlContext.Transforms.TokenizeText(tokOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.PoolEmbedding(poolOpts));
 
 var model = pipeline.Fit(trainData);
@@ -380,7 +380,7 @@ var tokenizer = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
     MaxTokenLength = 128
 }).Fit(dataView);
 
-var scorer = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+var scorer = mlContext.Transforms.ScoreOnnxTextEmbedding(new OnnxTextEmbeddingScorerOptions
 {
     ModelPath = "models/model.onnx",
     MaxTokenLength = 128,

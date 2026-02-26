@@ -163,13 +163,13 @@ catch (Exception) when (fallbackToCpu) { /* silent CPU fallback */ }
 
 ### Why No Changes to Data Flow / Cursor Code
 
-`OnnxTextModelScorerTransformer.RunOnnxBatch()` uses `OrtValue.CreateTensorValueFromMemory()` which works with CPU memory. When a GPU execution provider is active, ORT automatically copies input tensors to GPU memory before execution and copies output tensors back to CPU memory after. This is transparent — no code changes needed.
+`OnnxTextEmbeddingScorerTransformer.RunOnnxBatch()` uses `OrtValue.CreateTensorValueFromMemory()` which works with CPU memory. When a GPU execution provider is active, ORT automatically copies input tensors to GPU memory before execution and copies output tensors back to CPU memory after. This is transparent — no code changes needed.
 
 **Deferred optimization:** [IO Binding](https://onnxruntime.ai/docs/api/python/io_binding.html) would pre-allocate GPU buffers to eliminate per-call CPU↔GPU copies. This is a valid optimization for high-throughput scenarios but requires a larger refactor of `RunOnnxBatch()` and is out of scope for the initial GPU support.
 
 ### The `GetMLContext()` Reflection Workaround
 
-The extension methods on `TransformsCatalog` (e.g., `mlContext.Transforms.ScoreOnnxTextModel(...)`) need to pass the user's `MLContext` to estimator constructors so that `MLContext.GpuDeviceId` is preserved. However, `TransformsCatalog` doesn't publicly expose the `MLContext` that created it.
+The extension methods on `TransformsCatalog` (e.g., `mlContext.Transforms.ScoreOnnxTextEmbedding(...)`) need to pass the user's `MLContext` to estimator constructors so that `MLContext.GpuDeviceId` is preserved. However, `TransformsCatalog` doesn't publicly expose the `MLContext` that created it.
 
 We use reflection to extract it:
 
@@ -248,7 +248,7 @@ The original monolithic `OnnxTextEmbeddingTransformer` bundled tokenization, ONN
 | Transform | Responsibility | Reusability |
 |-----------|---------------|-------------|
 | `TextTokenizerTransformer` | Text → token IDs + attention mask | Any transformer model |
-| `OnnxTextModelScorerTransformer` | Token columns → raw ONNX output | Any transformer ONNX model |
+| `OnnxTextEmbeddingScorerTransformer` | Token columns → raw ONNX output | Any transformer ONNX model |
 | `EmbeddingPoolingTransformer` | Raw output → pooled embedding | Embedding generation |
 
 ### Why Modularize?
@@ -272,3 +272,29 @@ The facade's `GenerateEmbeddings()` (used by MEAI) uses **eager evaluation** via
 ### Memory Tradeoff
 
 Lazy evaluation eliminates the intermediate materialization concern. Peak memory is bounded by `BatchSize × rowSize` (~6 MB for batch=32 with a 384-dim model), regardless of dataset size. The scorer cursor achieves batch throughput via lookahead batching — reading N rows ahead, running a single `session.Run()`, then serving cached results one at a time.
+
+## Naming: OnnxTextEmbeddingScorer (not OnnxTextEmbeddingScorer)
+
+The ONNX inference transform was originally named `OnnxTextEmbeddingScorerTransformer` / `OnnxTextEmbeddingScorerEstimator`. This was renamed to `OnnxTextEmbeddingScorerTransformer` / `OnnxTextEmbeddingScorerEstimator`.
+
+### Why the Original Name Was Wrong
+
+"OnnxTextEmbeddingScorer" is semantically vague. "Text model" could mean any ONNX model that processes text — classification, named-entity recognition, sentiment analysis, question answering, reranking, summarization. But this transform is purpose-built for **embedding models**: it outputs either token-level hidden states (for downstream mean/CLS pooling) or pre-pooled sentence embeddings. Its tensor auto-discovery logic searches for `sentence_embedding`, `pooler_output`, and `last_hidden_state` — all embedding-specific output names. A text classifier's `logits` output would be meaningless here.
+
+### Why "TextEmbeddingScorer"
+
+The new name `OnnxTextEmbeddingScorer` was chosen for three reasons:
+
+1. **Semantic precision**: "TextEmbedding" unambiguously communicates that this transform runs an embedding model, not any arbitrary text model.
+2. **Consistency with the facade**: The top-level estimator is `OnnxTextEmbeddingEstimator`. The scorer (one layer down) should echo the same domain vocabulary — `OnnxTextEmbedding` is the shared root.
+3. **Future disambiguation**: If the library adds support for image embeddings (CLIP) or multimodal embeddings, "Text" in the name distinguishes this transform from an `OnnxImageEmbeddingScorer` without ambiguity.
+
+The "Scorer" suffix is retained because it follows ML.NET's convention for transforms that run model inference (scoring). The full type names become:
+
+| Type | Role |
+|------|------|
+| `OnnxTextEmbeddingScorerOptions` | Configuration |
+| `OnnxTextEmbeddingScorerEstimator` | Creates the transformer at `Fit()` time |
+| `OnnxTextEmbeddingScorerTransformer` | Runs ONNX inference lazily via cursor batching |
+
+The extension method was renamed from `ScoreOnnxTextEmbedding()` to `ScoreOnnxTextEmbedding()` following the same rationale.

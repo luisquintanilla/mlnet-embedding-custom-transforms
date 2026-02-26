@@ -180,7 +180,7 @@ var tokenizer = mlContext.Transforms.TokenizeText(new TextTokenizerOptions
 var tokenized = tokenizer.Transform(dataView);
 
 // Step 2: Score with ONNX (task-agnostic)
-var scorer = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+var scorer = mlContext.Transforms.ScoreOnnxTextEmbedding(new OnnxTextEmbeddingScorerOptions
 {
     ModelPath = "model.onnx",
     MaxTokenLength = 128,
@@ -215,12 +215,12 @@ The composable architecture makes it easy to add new task-specific transforms th
 ```csharp
 // Future: text classification
 var pipeline = mlContext.Transforms.TokenizeText(tokOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.SoftmaxClassify(classOpts));  // new transform
 
 // Future: named entity recognition
 var pipeline = mlContext.Transforms.TokenizeText(tokOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.DecodeNerEntities(nerOpts));  // new transform
 ```
 
@@ -319,7 +319,7 @@ This would give full `mlContext.Model.Save()` / `mlContext.Model.Load()` support
 
 GPU (CUDA) inference is now supported. The library references `Microsoft.ML.OnnxRuntime.Managed` (managed API only, no native binaries). Consuming applications choose their execution provider by referencing the appropriate native package (`Microsoft.ML.OnnxRuntime` for CPU, `Microsoft.ML.OnnxRuntime.Gpu` for CUDA).
 
-Both `OnnxTextModelScorerOptions` and `OnnxTextEmbeddingOptions` expose `GpuDeviceId` and `FallbackToCpu` properties. The resolution order follows ML.NET convention:
+Both `OnnxTextEmbeddingScorerOptions` and `OnnxTextEmbeddingOptions` expose `GpuDeviceId` and `FallbackToCpu` properties. The resolution order follows ML.NET convention:
 
 1. Per-estimator `options.GpuDeviceId` (explicit override)
 2. `mlContext.GpuDeviceId` (context-level default)
@@ -330,7 +330,7 @@ Both `OnnxTextModelScorerOptions` and `OnnxTextEmbeddingOptions` expose `GpuDevi
 mlContext.GpuDeviceId = 0;
 
 // Or per-estimator override with graceful fallback
-var scorerOptions = new OnnxTextModelScorerOptions
+var scorerOptions = new OnnxTextEmbeddingScorerOptions
 {
     ModelPath = "model.onnx",
     GpuDeviceId = 0,

@@ -33,7 +33,7 @@ var tokenized = tokenizer.Transform(dataView);
 
 // Step 2: Score with ONNX (shared across all pooling strategies)
 Console.WriteLine("Step 2: ONNX scoring (shared)...");
-var scorer = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+var scorer = mlContext.Transforms.ScoreOnnxTextEmbedding(new OnnxTextEmbeddingScorerOptions
 {
     ModelPath = modelPath,
     MaxTokenLength = 128,

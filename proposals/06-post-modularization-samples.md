@@ -4,7 +4,7 @@
 
 After the modular transform pipeline (proposals 01–05) merges, add samples that showcase patterns **only possible** with the composable architecture. These demonstrate the value of modularization and serve as acceptance tests for the new transforms.
 
-**Dependency:** Proposals 01–05 must be implemented first. These samples use `TextTokenizerEstimator`, `OnnxTextModelScorerEstimator`, `EmbeddingPoolingEstimator`, and `EmbeddingGeneratorEstimator` directly.
+**Dependency:** Proposals 01–05 must be implemented first. These samples use `TextTokenizerEstimator`, `OnnxTextEmbeddingScorerEstimator`, `EmbeddingPoolingEstimator`, and `EmbeddingGeneratorEstimator` directly.
 
 ## Samples
 
@@ -15,7 +15,7 @@ After the modular transform pipeline (proposals 01–05) merges, add samples tha
 **Model:** all-MiniLM-L6-v2 (reuse from BasicUsage — same model files).
 
 **Pattern demonstrated:**
-- Build a pipeline with explicit `TokenizeText → ScoreOnnxTextModel → PoolEmbedding` steps
+- Build a pipeline with explicit `TokenizeText → ScoreOnnxTextEmbedding → PoolEmbedding` steps
 - Run the tokenizer + scorer once, then apply three different pooling transforms (Mean, CLS, Max) to the same scored output
 - Compare cosine similarity rankings across the three strategies
 - Show how results differ: CLS tends to weight the [CLS] token's representation, Mean averages all tokens, Max takes the maximum activation per dimension
@@ -57,7 +57,7 @@ var tokenizer = tokenizerEstimator.Fit(dataView);
 var tokenized = tokenizer.Transform(dataView);
 
 // Step 2: Score with ONNX (shared across all pooling strategies)
-var scorerEstimator = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+var scorerEstimator = mlContext.Transforms.ScoreOnnxTextEmbedding(new OnnxTextEmbeddingScorerOptions
 {
     ModelPath = modelPath,
     MaxTokenLength = 128,
@@ -190,7 +190,7 @@ using (var cursor = tokenized.GetRowCursor(tokenized.Schema))
 
 // Step 2: Score
 Console.WriteLine("=== Step 2: ONNX Scoring ===\n");
-var scorer = mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions
+var scorer = mlContext.Transforms.ScoreOnnxTextEmbedding(new OnnxTextEmbeddingScorerOptions
 {
     ModelPath = modelPath,
     MaxTokenLength = 32,
@@ -385,7 +385,7 @@ These samples should be implemented **after** all of proposals 01–05 are merge
 | Proposal | What it provides | Which sample uses it |
 |----------|-----------------|---------------------|
 | [01-text-tokenizer-transform.md](01-text-tokenizer-transform.md) | `TextTokenizerEstimator` | B1, B2 |
-| [02-onnx-text-model-scorer-transform.md](02-onnx-text-model-scorer-transform.md) | `OnnxTextModelScorerEstimator` | B1, B2 |
+| [02-onnx-text-embedding-scorer-transform.md](02-onnx-text-embedding-scorer-transform.md) | `OnnxTextEmbeddingScorerEstimator` | B1, B2 |
 | [03-embedding-pooling-transform.md](03-embedding-pooling-transform.md) | `EmbeddingPoolingEstimator` | B1, B2 |
 | [04-facade-refactor.md](04-facade-refactor.md) | Facade still works | B3 (creates transformer via facade) |
 | [05-meai-integration.md](05-meai-integration.md) | `EmbeddingGeneratorEstimator` | B3 |
@@ -398,6 +398,6 @@ However, if a future text classification sample is added, it would follow the sa
 
 ```csharp
 var pipeline = mlContext.Transforms.TokenizeText(tokOpts)
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(scorerOpts))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts))
     .Append(mlContext.Transforms.SoftmaxClassify(classificationOpts));  // future transform
 ```

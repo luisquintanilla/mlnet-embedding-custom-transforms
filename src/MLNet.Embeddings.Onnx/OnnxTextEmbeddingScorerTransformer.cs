@@ -12,16 +12,16 @@ namespace MLNet.Embeddings.Onnx;
 /// The cursor reads ahead BatchSize rows from the upstream tokenizer cursor,
 /// runs a single ONNX session.Run() call, then serves results one at a time.
 /// </summary>
-public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
+public sealed class OnnxTextEmbeddingScorerTransformer : ITransformer, IDisposable
 {
     private readonly MLContext _mlContext;
-    private readonly OnnxTextModelScorerOptions _options;
+    private readonly OnnxTextEmbeddingScorerOptions _options;
     private readonly InferenceSession _session;
     private readonly OnnxModelMetadata _metadata;
 
     public bool IsRowToRowMapper => true;
 
-    internal OnnxTextModelScorerOptions Options => _options;
+    internal OnnxTextEmbeddingScorerOptions Options => _options;
 
     /// <summary>Hidden dimension of the model output.</summary>
     public int HiddenDim => _metadata.HiddenDim;
@@ -31,9 +31,9 @@ public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
 
     internal OnnxModelMetadata Metadata => _metadata;
 
-    internal OnnxTextModelScorerTransformer(
+    internal OnnxTextEmbeddingScorerTransformer(
         MLContext mlContext,
-        OnnxTextModelScorerOptions options,
+        OnnxTextEmbeddingScorerOptions options,
         InferenceSession session,
         OnnxModelMetadata metadata)
     {
@@ -171,13 +171,13 @@ public sealed class OnnxTextModelScorerTransformer : ITransformer, IDisposable
 internal sealed class ScorerDataView : IDataView
 {
     private readonly IDataView _input;
-    private readonly OnnxTextModelScorerTransformer _scorer;
+    private readonly OnnxTextEmbeddingScorerTransformer _scorer;
 
     public DataViewSchema Schema { get; }
     public bool CanShuffle => false;
     public long? GetRowCount() => _input.GetRowCount();
 
-    internal ScorerDataView(IDataView input, OnnxTextModelScorerTransformer scorer)
+    internal ScorerDataView(IDataView input, OnnxTextEmbeddingScorerTransformer scorer)
     {
         _input = input;
         _scorer = scorer;
@@ -237,7 +237,7 @@ internal sealed class ScorerCursor : DataViewRowCursor
 {
     private readonly ScorerDataView _parent;
     private readonly DataViewRowCursor _inputCursor;
-    private readonly OnnxTextModelScorerTransformer _scorer;
+    private readonly OnnxTextEmbeddingScorerTransformer _scorer;
 
     // Lookahead batch state
     private float[][]? _batchResults;
@@ -256,7 +256,7 @@ internal sealed class ScorerCursor : DataViewRowCursor
     internal ScorerCursor(
         ScorerDataView parent,
         DataViewRowCursor inputCursor,
-        OnnxTextModelScorerTransformer scorer)
+        OnnxTextEmbeddingScorerTransformer scorer)
     {
         _parent = parent;
         _inputCursor = inputCursor;

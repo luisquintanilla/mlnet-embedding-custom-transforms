@@ -5,10 +5,10 @@ using Microsoft.ML.OnnxRuntime;
 namespace MLNet.Embeddings.Onnx;
 
 /// <summary>
-/// Configuration for the ONNX text model scorer transform.
+/// Configuration for the ONNX text embedding scorer transform.
 /// Runs inference on a transformer-architecture ONNX model (BERT, MiniLM, etc.).
 /// </summary>
-public class OnnxTextModelScorerOptions
+public class OnnxTextEmbeddingScorerOptions
 {
     /// <summary>Path to the ONNX model file.</summary>
     public required string ModelPath { get; set; }
@@ -80,15 +80,15 @@ internal sealed record OnnxModelMetadata(
     int OutputRank);
 
 /// <summary>
-/// ML.NET IEstimator that creates an OnnxTextModelScorerTransformer.
+/// ML.NET IEstimator that creates an OnnxTextEmbeddingScorerTransformer.
 /// Fit() validates the input schema, loads the ONNX model, and auto-discovers tensor metadata.
 /// </summary>
-public sealed class OnnxTextModelScorerEstimator : IEstimator<OnnxTextModelScorerTransformer>
+public sealed class OnnxTextEmbeddingScorerEstimator : IEstimator<OnnxTextEmbeddingScorerTransformer>
 {
     private readonly MLContext _mlContext;
-    private readonly OnnxTextModelScorerOptions _options;
+    private readonly OnnxTextEmbeddingScorerOptions _options;
 
-    public OnnxTextModelScorerEstimator(MLContext mlContext, OnnxTextModelScorerOptions options)
+    public OnnxTextEmbeddingScorerEstimator(MLContext mlContext, OnnxTextEmbeddingScorerOptions options)
     {
         _mlContext = mlContext ?? throw new ArgumentNullException(nameof(mlContext));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -97,7 +97,7 @@ public sealed class OnnxTextModelScorerEstimator : IEstimator<OnnxTextModelScore
             throw new FileNotFoundException($"ONNX model not found: {options.ModelPath}");
     }
 
-    public OnnxTextModelScorerTransformer Fit(IDataView input)
+    public OnnxTextEmbeddingScorerTransformer Fit(IDataView input)
     {
         ValidateColumn(input.Schema, _options.TokenIdsColumnName);
         ValidateColumn(input.Schema, _options.AttentionMaskColumnName);
@@ -107,7 +107,7 @@ public sealed class OnnxTextModelScorerEstimator : IEstimator<OnnxTextModelScore
         var session = CreateInferenceSession();
         var metadata = DiscoverModelMetadata(session);
 
-        return new OnnxTextModelScorerTransformer(_mlContext, _options, session, metadata);
+        return new OnnxTextEmbeddingScorerTransformer(_mlContext, _options, session, metadata);
     }
 
     public SchemaShape GetOutputSchema(SchemaShape inputSchema)

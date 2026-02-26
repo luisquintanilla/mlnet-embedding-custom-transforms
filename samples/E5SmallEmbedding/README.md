@@ -14,7 +14,7 @@ Demonstrates [intfloat/e5-small-v2](https://huggingface.co/intfloat/e5-small-v2)
 
 ## What This Sample Shows
 
-1. **Composable Modular Pipeline** — Explicit `TokenizeText → ScoreOnnxTextModel → PoolEmbedding` steps using directory-based tokenizer auto-detection
+1. **Composable Modular Pipeline** — Explicit `TokenizeText → ScoreOnnxTextEmbedding → PoolEmbedding` steps using directory-based tokenizer auto-detection
 2. **Query/passage prefixes for retrieval** — E5 models use `"query: "` for queries and `"passage: "` for documents. The sample compares similarity scores with and without prefixes to show their effect on retrieval ranking
 3. **Chained Estimator Pipeline (`.Append`)** — Idiomatic ML.NET pattern with all three transforms chained
 4. **Convenience Facade** — `OnnxTextEmbeddingEstimator` as a single-shot alternative, verified to produce identical results
@@ -64,7 +64,7 @@ This sample demonstrates the modular pipeline where each step is a separate, ins
 ```csharp
 // Build the pipeline step by step
 var tokenizer = mlContext.Transforms.TokenizeText(tokenizerOpts).Fit(dataView);
-var scorer = mlContext.Transforms.ScoreOnnxTextModel(scorerOpts).Fit(tokenized);
+var scorer = mlContext.Transforms.ScoreOnnxTextEmbedding(scorerOpts).Fit(tokenized);
 var pooler = mlContext.Transforms.PoolEmbedding(poolingOpts).Fit(scored);
 
 // Inspect model metadata

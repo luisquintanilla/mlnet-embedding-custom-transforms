@@ -76,27 +76,27 @@ build-test
 
 ---
 
-## Task 2: Create OnnxTextModelScorerEstimator + OnnxTextModelScorerTransformer
+## Task 2: Create OnnxTextEmbeddingScorerEstimator + OnnxTextEmbeddingScorerTransformer
 
 **ID:** `onnx-scorer-transform`
 **Dependencies:** `tokenizer-transform`
-**Spec:** [02-onnx-text-model-scorer-transform.md](02-onnx-text-model-scorer-transform.md)
+**Spec:** [02-onnx-text-embedding-scorer-transform.md](02-onnx-text-embedding-scorer-transform.md)
 
 ### Files to Create
 | File | Lines (est.) |
 |------|-------------|
-| `src/MLNet.Embeddings.Onnx/OnnxTextModelScorerEstimator.cs` | ~140 |
-| `src/MLNet.Embeddings.Onnx/OnnxTextModelScorerTransformer.cs` | ~450 (includes ScorerDataView + ScorerCursor with lookahead batching) |
+| `src/MLNet.Embeddings.Onnx/OnnxTextEmbeddingScorerEstimator.cs` | ~140 |
+| `src/MLNet.Embeddings.Onnx/OnnxTextEmbeddingScorerTransformer.cs` | ~450 (includes ScorerDataView + ScorerCursor with lookahead batching) |
 
 ### Code to Extract From
-- `OnnxTextEmbeddingEstimator.DiscoverModelMetadata()` → `OnnxTextModelScorerEstimator.DiscoverModelMetadata()`
+- `OnnxTextEmbeddingEstimator.DiscoverModelMetadata()` → `OnnxTextEmbeddingScorerEstimator.DiscoverModelMetadata()`
 - `OnnxTextEmbeddingEstimator.FindTensorName()` / `TryFindTensorName()` → same methods on scorer estimator
 - `OnnxTextEmbeddingTransformer.ProcessBatch()` lines 156-189 → `RunOnnxBatch()` shared by cursor and direct face
 
 ### Types to Create
-- `OnnxTextModelScorerOptions` — options class
-- `OnnxTextModelScorerEstimator` — IEstimator<OnnxTextModelScorerTransformer>
-- `OnnxTextModelScorerTransformer` — ITransformer, IDisposable
+- `OnnxTextEmbeddingScorerOptions` — options class
+- `OnnxTextEmbeddingScorerEstimator` — IEstimator<OnnxTextEmbeddingScorerTransformer>
+- `OnnxTextEmbeddingScorerTransformer` — ITransformer, IDisposable
 - `ScorerDataView` — wrapping IDataView (lazy, no materialization)
 - `ScorerCursor` — lookahead batching cursor (reads N rows, runs batch ONNX, serves one at a time)
 - `OnnxModelMetadata` — internal record for discovered tensor metadata
@@ -171,7 +171,7 @@ build-test
 ### What Changes
 - `Fit()` creates and chains TokenizerEstimator → ScorerEstimator → PoolingEstimator
 - `GetOutputSchema()` delegates through the chain
-- `DiscoverModelMetadata()` moves to `OnnxTextModelScorerEstimator`
+- `DiscoverModelMetadata()` moves to `OnnxTextEmbeddingScorerEstimator`
 - `LoadTokenizer()` moves to `TextTokenizerEstimator`
 - `FindTensorName()` / `TryFindTensorName()` move to scorer estimator
 
@@ -242,7 +242,7 @@ build-test
 
 ### New Extension Methods
 - `mlContext.Transforms.TokenizeText(options)` → `TextTokenizerEstimator`
-- `mlContext.Transforms.ScoreOnnxTextModel(options)` → `OnnxTextModelScorerEstimator`
+- `mlContext.Transforms.ScoreOnnxTextEmbedding(options)` → `OnnxTextEmbeddingScorerEstimator`
 - `mlContext.Transforms.PoolEmbedding(options)` → `EmbeddingPoolingEstimator`
 
 ### Acceptance Criteria
@@ -329,7 +329,7 @@ Add a section demonstrating the composable pipeline alongside existing convenien
 Console.WriteLine("5. Composable Pipeline");
 
 var compPipeline = mlContext.Transforms.TokenizeText(new TextTokenizerOptions { ... })
-    .Append(mlContext.Transforms.ScoreOnnxTextModel(new OnnxTextModelScorerOptions { ... }))
+    .Append(mlContext.Transforms.ScoreOnnxTextEmbedding(new OnnxTextEmbeddingScorerOptions { ... }))
     .Append(mlContext.Transforms.PoolEmbedding(new EmbeddingPoolingOptions { ... }));
 
 var compChain = compPipeline.Fit(dataView);
