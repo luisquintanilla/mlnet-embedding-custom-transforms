@@ -52,6 +52,19 @@ public class OnnxTextModelScorerOptions
     /// falls back to "last_hidden_state" / "output" (unpooled).
     /// </summary>
     public string? OutputTensorName { get; set; }
+
+    /// <summary>
+    /// Optional GPU device ID to run execution on. Null = use MLContext.GpuDeviceId.
+    /// Set to a non-negative integer (e.g. 0) to target a specific CUDA device.
+    /// Requires the consuming application to reference Microsoft.ML.OnnxRuntime.Gpu.
+    /// </summary>
+    public int? GpuDeviceId { get; set; }
+
+    /// <summary>
+    /// If true and GPU initialization fails, fall back to CPU instead of throwing.
+    /// Default: false.
+    /// </summary>
+    public bool FallbackToCpu { get; set; }
 }
 
 /// <summary>
@@ -91,7 +104,8 @@ public sealed class OnnxTextModelScorerEstimator : IEstimator<OnnxTextModelScore
         if (_options.TokenTypeIdsColumnName != null)
             ValidateColumn(input.Schema, _options.TokenTypeIdsColumnName);
 
-        var session = new InferenceSession(_options.ModelPath);
+        var sessionOptions = CreateSessionOptions();
+        var session = new InferenceSession(_options.ModelPath, sessionOptions);
         var metadata = DiscoverModelMetadata(session);
 
         return new OnnxTextModelScorerTransformer(_mlContext, _options, session, metadata);
@@ -168,6 +182,45 @@ public sealed class OnnxTextModelScorerEstimator : IEstimator<OnnxTextModelScore
         return new OnnxModelMetadata(
             inputIdsName, attentionMaskName, tokenTypeIdsName,
             outputName, hiddenDim, hasPooledOutput, outputRank);
+    }
+
+    /// <summary>
+    /// Overload that creates a temporary session using the configured SessionOptions
+    /// to discover model metadata. Used by GetOutputSchema() scenarios.
+    /// </summary>
+    internal OnnxModelMetadata DiscoverModelMetadata()
+    {
+        var sessionOptions = CreateSessionOptions();
+        using var session = new InferenceSession(_options.ModelPath, sessionOptions);
+        return DiscoverModelMetadata(session);
+    }
+
+    private SessionOptions CreateSessionOptions()
+    {
+        // Resolve GPU device: per-estimator option → MLContext.GpuDeviceId → null (CPU)
+        int? deviceId = _options.GpuDeviceId ?? _mlContext.GpuDeviceId;
+        bool fallbackToCpu = _options.FallbackToCpu;
+
+        // If MLContext provides FallbackToCpu and no per-estimator override was set,
+        // inherit the context-level setting.
+        if (_options.GpuDeviceId == null && _mlContext.GpuDeviceId != null)
+            fallbackToCpu = _mlContext.FallbackToCpu;
+
+        var options = new SessionOptions();
+
+        if (deviceId.HasValue)
+        {
+            try
+            {
+                options.AppendExecutionProvider_CUDA(deviceId.Value);
+            }
+            catch (Exception) when (fallbackToCpu)
+            {
+                // CUDA not available — silently fall back to CPU
+            }
+        }
+
+        return options;
     }
 
     private static string FindTensorName(

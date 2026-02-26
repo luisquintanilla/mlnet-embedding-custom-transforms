@@ -192,12 +192,52 @@ Any sentence-transformer ONNX model that follows the standard input/output conve
 
 Models with `sentence_embedding` output (pre-pooled) are auto-detected and pooling is skipped.
 
+## GPU Support (CUDA)
+
+The library supports GPU-accelerated ONNX inference via CUDA. The library itself ships with no native binaries — you control the execution provider by choosing your OnnxRuntime package.
+
+### Package Setup
+
+Replace `Microsoft.ML.OnnxRuntime` with `Microsoft.ML.OnnxRuntime.Gpu` in your application:
+
+```xml
+<PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.2" />
+```
+
+**Prerequisites:** NVIDIA GPU, CUDA Toolkit, and cuDNN. See [ORT CUDA Execution Provider docs](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html) for version requirements.
+
+### Usage
+
+```csharp
+// Pattern 1: Context-level (applies to all ONNX estimators)
+var mlContext = new MLContext();
+mlContext.GpuDeviceId = 0; // Use first CUDA device
+
+var estimator = new OnnxTextEmbeddingEstimator(mlContext, new OnnxTextEmbeddingOptions
+{
+    ModelPath = "models/model.onnx",
+    TokenizerPath = "models/",
+});
+
+// Pattern 2: Per-estimator override
+var scorerOptions = new OnnxTextModelScorerOptions
+{
+    ModelPath = "models/model.onnx",
+    GpuDeviceId = 0,       // Override for this estimator only
+    FallbackToCpu = true,  // Graceful degradation if CUDA unavailable
+};
+```
+
+**Resolution order:** Per-estimator `GpuDeviceId` → `MLContext.GpuDeviceId` → `null` (CPU).
+
+When `FallbackToCpu = true`, if CUDA initialization fails the estimator silently falls back to CPU execution.
+
 ## NuGet Dependencies
 
 | Package | Version | Purpose |
 |---------|---------|---------|
 | `Microsoft.ML` | 5.0.0 | IEstimator/ITransformer, IDataView, MLContext |
-| `Microsoft.ML.OnnxRuntime` | 1.24.2 | InferenceSession, OrtValue |
+| `Microsoft.ML.OnnxRuntime.Managed` | 1.24.2 | InferenceSession, OrtValue (managed API; bring your own native runtime) |
 | `Microsoft.ML.Tokenizers` | 2.0.0 | BertTokenizer (WordPiece), BPE, SentencePiece |
 | `Microsoft.Extensions.AI.Abstractions` | 10.3.0 | IEmbeddingGenerator |
 | `System.Numerics.Tensors` | 10.0.3 | Tensor\<T\>, TensorPrimitives |
