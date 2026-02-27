@@ -1,0 +1,27 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- Shared package metadata -->
+    <Authors>Luis Quintanilla</Authors>
+    <Company>Luis Quintanilla</Company>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/luisquintanilla/mlnet-embedding-custom-transforms</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/luisquintanilla/mlnet-embedding-custom-transforms</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+
+    <!-- Default: projects are not packable unless they opt in -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- SourceLink: embed git commit info for debugger source stepping -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
+
+</Project>

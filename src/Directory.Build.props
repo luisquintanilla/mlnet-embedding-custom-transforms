@@ -1,0 +1,21 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- All src/ projects are packable -->
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <!-- Bundle repo README into NuGet package -->
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
+    <!-- MinVer: version from git tags (e.g., v0.1.0-preview.1) -->
+    <MinVerTagPrefix>v</MinVerTagPrefix>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="" />
+    <PackageReference Include="MinVer" Version="6.0.0" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

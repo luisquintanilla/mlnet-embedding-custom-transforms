@@ -269,6 +269,60 @@ var scorerOptions = new OnnxTextEmbeddingScorerOptions
 
 When `FallbackToCpu = true`, if CUDA initialization fails the estimator silently falls back to CPU execution.
 
+## Using as a NuGet Package
+
+Pre-built packages are published to [GitHub Packages](https://github.com/luisquintanilla/mlnet-embedding-custom-transforms/packages). No need to copy source code.
+
+**1. Add the GitHub Packages NuGet source** (one-time setup):
+
+```xml
+<!-- nuget.config in your project root -->
+<configuration>
+  <packageSources>
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+    <add key="github-packages" value="https://nuget.pkg.github.com/luisquintanilla/index.json" />
+  </packageSources>
+  <packageSourceCredentials>
+    <github-packages>
+      <add key="Username" value="YOUR_GITHUB_USERNAME" />
+      <add key="ClearTextPassword" value="YOUR_GITHUB_PAT" />
+    </github-packages>
+  </packageSourceCredentials>
+</configuration>
+```
+
+> **Note:** GitHub Packages requires authentication even for public packages. Create a [Personal Access Token](https://github.com/settings/tokens) with `read:packages` scope.
+
+**2. Add the package reference:**
+
+```xml
+<PackageReference Include="MLNet.Embeddings.Onnx" Version="0.1.0-preview.1" />
+```
+
+**3. Use it:**
+
+```csharp
+using MLNet.Embeddings.Onnx;
+
+var mlContext = new MLContext();
+var estimator = new OnnxTextEmbeddingEstimator(mlContext, new OnnxTextEmbeddingOptions
+{
+    ModelPath = "models/model.onnx",
+    TokenizerPath = "models/",
+});
+var transformer = estimator.Fit(data);
+```
+
+### Releasing a new version
+
+Packages are versioned via git tags using [MinVer](https://github.com/adamralph/minver):
+
+```bash
+git tag v0.1.0-preview.1
+git push origin v0.1.0-preview.1
+# → GitHub Actions builds, packs, and publishes to GitHub Packages
+```
+
 ## NuGet Dependencies
 
 | Package | Version | Purpose |

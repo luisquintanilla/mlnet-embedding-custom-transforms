@@ -4,6 +4,9 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>MLNet.Embeddings.Onnx</PackageId>
+    <Description>Custom ML.NET transforms for text embeddings using local HuggingFace ONNX models. Tokenization, ONNX inference, pooling, normalization, and MEAI integration.</Description>
+    <PackageTags>ml.net;onnx;embeddings;transformers;huggingface;sentence-transformers;meai</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>
